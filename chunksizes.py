@@ -48,14 +48,7 @@ logging.basicConfig(level=loglevel_num, format= \
 
 MAXCODESIZE = 0x6000 # from EIP 170
 
-
-# get the JSON
-# for each tx, turn the segment list into a bitmap of used chunks
-
 block : int
-total_num_bytes_code = 0
-total_num_bytes_chunks = 0
-total_naive_bytes = 0
 blocks : int = 0
 contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':RoaringBitmap}, total=True)
 
@@ -73,10 +66,10 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
     # hashes at tree level 0 = as many as chunks
     # max hashes at tree level N = (num of level N-1) / arity
     # we assume fixed number of levels = log (max chunks) / log(arity)
-    # 0,1,2,3,4,5
-    # 0   1   2
-    # 0       1
-    # 0
+    # L0    0,1,2,3,4,5
+    # L1    0   1   2
+    # L2    0       1
+    # L3    0
     num_levels = math.log(max_chunks) / math.log(args.arity)
     levels_done = 0
     num_hashes = 0
@@ -100,6 +93,11 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
 segment_sizes : List[int] = []
 
 files = sorted([f for f in os.listdir(args.traces_dir) if (".json.gz" == f[-8:])])
+total_executed_bytes = 0
+total_chunk_bytes = 0
+total_naive_bytes = 0
+total_hash_bytes = 0
+print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
 for f in files:
     with gzip.open(os.path.join(args.traces_dir, f), 'rb') as gzf:
         block_traces = json.load(gzf)
@@ -123,7 +121,7 @@ for f in files:
             for t in traces:
                 tx_hash: str = t["Tx"]
                 if tx_hash is not None:
-                    #logging.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
+                    logging.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
                     codehash : str = t["CodeHash"]
                     data = dict_contracts.get(codehash)
                     if data is None:
@@ -149,19 +147,20 @@ for f in files:
                     dict_contracts[codehash] = contract_data(instances=instances, size=size, map=bytemap)
                     del t["Segments"]
 
+                    # transaction-level segment stats
                     if args.detail_level >= 3:
                         sd = 0
                         if len(tx_segsizes)>2:
                             sd = statistics.stdev(tx_segsizes)
                             qt = statistics.quantiles(tx_segsizes)
-                        logging.info(f"Block {block} codehash={codehash} tx={t['TxAddr']} segs={len(tx_segsizes)} :"
+                        print(f"Block {block} codehash={codehash} tx={t['TxAddr']} segs={len(tx_segsizes)} :"
                                      f"\t\tavg={statistics.mean(tx_segsizes):.0f}\t\tstdev={sd:.0f}\t\tntiles={qt}")
                     block_segsizes += tx_segsizes
 
-
+            # block-level segment stats
             if args.detail_level >=1:
-                logging.info(
-                    f"Block {block}: segs={len(block_segsizes)} :\t\tavg={statistics.mean(block_segsizes):.0f}\t\t"
+                print(
+                    f"Block {block}: segs={len(block_segsizes)}\t\tavg={statistics.mean(block_segsizes):.0f}\t\t"
                     f"stdev={statistics.stdev(block_segsizes):.0f}\t\tntiles={statistics.quantiles(block_segsizes)}")
 
             block_executed_bytes = 0
@@ -192,7 +191,7 @@ for f in files:
 
                 chunk_waste = (1 - executed_bytes / chunked_bytes) * 100
                 if args.detail_level >=2:
-                    logging.info(f"Contract {codehash}: {instances} txs, size {codesize}\texecuted {executed_bytes}\tchunked {chunked_bytes}\twasted={chunk_waste:.0f}%"+highlighter)
+                    print(f"Contract {codehash}: {instances} txs, size {codesize}\texecuted {executed_bytes}\tchunked {chunked_bytes}\twasted={chunk_waste:.0f}%"+highlighter)
 
                 block_chunk_bytes += chunked_bytes
                 block_contract_bytes += codesize
@@ -201,29 +200,35 @@ for f in files:
             block_chunk_waste = block_chunk_bytes - block_executed_bytes
             block_chunk_wasted_ratio = block_chunk_waste / block_chunk_bytes * 100
             block_hash_bytes = merklize(chunkmap) * args.hash_size
+            block_merklization_bytes = block_chunk_bytes + block_hash_bytes
+            block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
 
+            # block-level merklization stats
             if args.detail_level >=1:
                 #logging.info(f"Block {block}: txs={len(traces)}\treused_contracts={reused_contracts}\tcontracts={block_contract_bytes//1024}K\texecuted={block_executed_bytes//1024}K\tchunked={block_chunk_bytes//1024}K\twasted={block_chunk_wasted_ratio:.0f}%")
-                logging.info(f"Block {block}:\texec={block_executed_bytes/1024:.0f}K\tmerklization={block_chunk_bytes/1024:.1f}+{block_hash_bytes/1024:.1f}K")
+                print(f"Block {block}: overhead={block_merklization_overhead_ratio:.1f}%\texec={block_executed_bytes/1024:.0f}K\tmerklization= {block_merklization_bytes/1024:.1f} K = {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K")
 
-            #t["NumBytesCode"] = num_bytes_code
-            #t["NumBytesChunks"] = num_bytes_chunks
-
-            #global total_num_bytes_chunks
-            #global total_num_bytes_code
             file_chunk_bytes += block_chunk_bytes
             file_executed_bytes += block_executed_bytes
             file_naive_bytes += block_contract_bytes
             file_hash_bytes += block_hash_bytes
-    #overhead_chunks = file_chunk_bytes - file_executed_bytes
-    #sent = 1 - file_chunk_bytes / file_naive_bytes
-    #overhead_ratio = overhead_chunks / file_chunk_bytes
-    #logging.info(f"file {f}: sent={sent*100:.0f}%  overhead_chunks={overhead_ratio * 100 :.0f}%")
+
+            total_chunk_bytes += block_chunk_bytes
+            total_executed_bytes += block_executed_bytes
+            total_naive_bytes += block_contract_bytes
+            total_hash_bytes += block_hash_bytes
+
+
     file_merklization_bytes = file_chunk_bytes + file_hash_bytes
-    logging.info(
-        f"file {f}:\texec={file_executed_bytes / 1024:.0f}K\t"
+    file_merklization_overhead_ratio = (file_merklization_bytes / file_executed_bytes - 1) * 100
+
+    # file-level merklization stats
+    print(
+        f"file {f}:\toverhead={file_merklization_overhead_ratio:.1f}%\texec={file_executed_bytes / 1024:.0f}K\t"
         f"merklization={file_merklization_bytes/1024:.1f}K = {file_chunk_bytes / 1024:.1f} K chunks + {file_hash_bytes / 1024:.1f} K hashes")
 
-#jsonfile = "segments-9000000.json.gz"
-#with open(f"{args.destination_dir}.log", "r") as log_progress:
-
+    total_merklization_bytes = total_chunk_bytes + total_hash_bytes
+    total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
+    print(
+        f"running total:\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
+        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes")
