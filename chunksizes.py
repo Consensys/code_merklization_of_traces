@@ -77,7 +77,8 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
     map = chunkmap
     while potential_hashes_in_level > args.arity:
         logging.debug(f"level {levels_done} pot_hashes={potential_hashes_in_level} num_hashes={len(map)}")
-        num_hashes += len(map)
+        if levels_done > 0:
+            num_hashes += len(map)
         bits = []
         max_hash_in_level = map.max() // args.arity
         for i in range(0, max_hash_in_level + 1):
