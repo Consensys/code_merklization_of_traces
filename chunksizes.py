@@ -160,9 +160,11 @@ for f in files:
 
             # block-level segment stats
             if args.detail_level >=1:
+                stats=""
+                if len(block_segsizes) > 3:
+                    stats=f"\t\tavg={statistics.mean(block_segsizes):.0f}\t\tstdev={statistics.stdev(block_segsizes):.0f}\t\tntiles={statistics.quantiles(block_segsizes)}"
                 print(
-                    f"Block {block}: segs={len(block_segsizes)}\t\tavg={statistics.mean(block_segsizes):.0f}\t\t"
-                    f"stdev={statistics.stdev(block_segsizes):.0f}\t\tntiles={statistics.quantiles(block_segsizes)}")
+                    f"Block {block}: segs={len(block_segsizes)}"+stats)
 
             block_executed_bytes = 0
             block_chunk_bytes = 0
