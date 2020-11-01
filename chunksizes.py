@@ -59,8 +59,8 @@ def sparkline_sizes(sizes : List) -> str :
     return line
 
 parser = argparse.ArgumentParser(description='Apply chunking to transaction segments',
-                                 epilog='Reads a directory of json files listing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes')
-parser.add_argument("traces_dir", help="Directory with trace files in .json.gz format")
+                                 epilog='Reads a directory or a list of json files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes')
+parser.add_argument("traces_dir", help="Directory with trace files in .json.gz format", nargs='+')
 parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes", type=int, default=32)
 parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree", type=int, default=32)
 parser.add_argument("-a", "--arity", help="Number of children per node of the Merkle tree", type=int, default=2)
@@ -122,7 +122,10 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
 
 segment_sizes : List[int] = []
 
-files = sorted([f for f in os.listdir(args.traces_dir) if (".json.gz" == f[-8:])])
+if len(args.traces_dir) == 1 and os.path.isdir(args.traces_dir[0]):
+    files = sorted([os.path.join(args.traces_dir[0], f) for f in os.listdir(args.traces_dir[0]) if (".json.gz" == f[-8:])])
+else:
+    files = sorted(args.traces_dir)
 total_executed_bytes = 0
 total_chunk_bytes = 0
 total_naive_bytes = 0
@@ -134,7 +137,7 @@ blocks : int = 0
 
 print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
 for f in files:
-    with gzip.open(os.path.join(args.traces_dir, f), 'rb') as gzf:
+    with gzip.open(f, 'rb') as gzf:
         block_traces = json.load(gzf)
         file_executed_bytes = 0
         file_chunk_bytes = 0
