@@ -7,6 +7,7 @@ verify_ssl = true
 
 [packages]
 roaringbitmap = "*"
+sparklines = "*"
 
 [requires]
 python_version = "3"
