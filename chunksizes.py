@@ -78,8 +78,6 @@ logging.basicConfig(level=loglevel_num, format= \
 
 MAXCODESIZE = 0x6000 # from EIP 170
 
-block : int
-blocks : int = 0
 contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':RoaringBitmap}, total=True)
 
 max_chunks = MAXCODESIZE // args.chunk_size
@@ -129,12 +127,14 @@ total_executed_bytes = 0
 total_chunk_bytes = 0
 total_naive_bytes = 0
 total_hash_bytes = 0
-total_segsizes: List[int] = []
+
+t0 = time.time()
+block : int
+blocks : int = 0
 
 print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
 for f in files:
     with gzip.open(os.path.join(args.traces_dir, f), 'rb') as gzf:
-        t0 = time.time()
         block_traces = json.load(gzf)
         file_executed_bytes = 0
         file_chunk_bytes = 0
@@ -275,12 +275,9 @@ for f in files:
     total_executed_bytes += file_executed_bytes
     total_naive_bytes += file_contract_bytes
     total_hash_bytes += file_hash_bytes
-    total_segsizes += file_segsizes
-    total_segsizes = sorted(total_segsizes)
 
     total_merklization_bytes = total_chunk_bytes + total_hash_bytes
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
         f"running total:\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
-        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t"
-        f"segment sizes:{sparkline_sizes(total_segsizes)}")
+        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t")
