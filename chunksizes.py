@@ -8,7 +8,7 @@ import gzip
 import statistics
 import time
 
-from roaringbitmap import RoaringBitmap, ImmutableRoaringBitmap
+from roaringbitmap import RoaringBitmap, ImmutableRoaringBitmap, MultiRoaringBitmap
 from typing import Dict, List, TypedDict, AnyStr
 from collections import defaultdict
 from sparklines import sparklines
@@ -59,7 +59,7 @@ def sparkline_sizes(sizes : List) -> str :
     return line
 
 parser = argparse.ArgumentParser(description='Apply chunking to transaction segments',
-                                 epilog='Reads a json file listing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness size')
+                                 epilog='Reads a directory of json files listing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes')
 parser.add_argument("traces_dir", help="Directory with trace files in .json.gz format")
 parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes", type=int, default=32)
 parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree", type=int, default=32)
@@ -84,11 +84,12 @@ contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':R
 
 max_chunks = MAXCODESIZE // args.chunk_size
 # bitmaps representing the bytes covered by each chunk. They are ANDed with the bitmaps of executed bytes
-chunkificators = [RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)).freeze() for x in
-                  range(0, max_chunks + 1)]
+chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)).freeze() for x in
+                  range(0, max_chunks + 1)])
+
 # bitmaps representing which nodes in level N of the tree connect to the same parent in level N-1
-merklizators = [RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in
-                range(0, len(chunkificators) // args.arity + 1)]
+merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in
+                range(0, len(chunkificators) // args.arity + 1)])
 
 # calculate the number of hashes needed to merklize the given bitmap of chunks
 def merklize(chunkmap : ImmutableRoaringBitmap):
