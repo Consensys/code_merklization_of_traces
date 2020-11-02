@@ -44,8 +44,8 @@ def sparkline_sizes(sizes : List) -> str :
     top_bucket = 2 * median # up to median there's half of the items. Since that's typically a short range anyway, let's show twice that.
     buckets_maxcontent = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
     if len(buckets_maxcontent)==0:
-        logging.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}")
-        return ""
+        logging.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}, block={block}")
+        return f"CAN'T BUCKETIZE! sizes={sizes}"
     buckets_contents = [0 for b in buckets_maxcontent]
     maxbucket = len(buckets_maxcontent)
     count = 0
@@ -59,7 +59,7 @@ def sparkline_sizes(sizes : List) -> str :
 
     sl = sparklines(buckets_contents)[0]
     remaining = (1 - count/len(sizes)) * 100
-    line = f"\t\tmedian={median}\t\t{buckets_maxcontent[0]}{sl}{buckets_maxcontent[-1]} (+{remaining:.0f}% more)"
+    line = f"median={median}\t\t{buckets_maxcontent[0]}{sl}{buckets_maxcontent[-1]} (+{remaining:.0f}% more)"
     return line
 
 parser = argparse.ArgumentParser(description='Apply chunking to transaction segments',
@@ -92,7 +92,7 @@ max_chunks = MAXCODESIZE // args.chunk_size
 #merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in range(0, len(chunkificators) // args.arity + 1)])
 
 # calculate the number of hashes needed to merklize the given bitmap of chunks
-def merklize(chunkmap : ImmutableRoaringBitmap):
+def merklize(chunkmap : ImmutableRoaringBitmap, arity : int, max_chunks : int):
     # max number of chunks = MAXCODESIZE // chunksize
     # hashes at tree level 0 = as many as chunks
     # max hashes at tree level N = (num of level N-1) / arity
@@ -101,29 +101,38 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
     # L1    0   1   2
     # L2    0       1
     # L3    0
-    num_levels = math.log(max_chunks) / math.log(args.arity)
-    levels_done = 0
+    num_levels = math.log(max_chunks) / math.log(arity)
+    current_level = 0
     num_hashes = 0
     potential_hashes_in_level = max_chunks
     map = chunkmap
-    while potential_hashes_in_level > args.arity:
-        logging.debug(f"level {levels_done} pot_hashes={potential_hashes_in_level} num_hashes={len(map)}")
-        if levels_done > 0:
-            num_hashes += len(map)
+    while potential_hashes_in_level >= arity:
+        logging.debug(f"L{current_level} pot_hashes={potential_hashes_in_level} num_hashes={len(map)}")
         bits = []
-        max_hash_in_level = map.max() // args.arity
+        max_hash_in_level = map.max() // arity
+        hashes_missing = 0
         for i in range(0, max_hash_in_level + 1):
-            siblings_start = i * args.arity
-            siblings_end = (i + 1) * args.arity
+            siblings_start = i * arity
+            siblings_end = (i + 1) * arity
             #if not map.isdisjoint(merklizators[i]):
-            overlap = map.clamp(siblings_start, siblings_end)
-            if len(overlap) != 0:
-                bits.append(i)
+            overlap = map.clamp(siblings_start, siblings_end)  # stop excluded from interval
+            lo = len(overlap)
+            if lo == 0:
+                # these siblings' parent is not present in the tree
+                continue
+            bits.append(i)
+            if lo == arity:
+                # we have all the data to recreate the hashes for this node, so we don't need to provide any hash
+                continue
+            hashes_missing = arity - lo
+            num_hashes += hashes_missing
+
+        logging.debug(f"L{current_level}: bitmap={bits}, num_missing_hashes={hashes_missing}")
+
         # switch map to parents'
         map = RoaringBitmap(bits).freeze()
-        potential_hashes_in_level = math.ceil(potential_hashes_in_level / args.arity)
-        levels_done += 1
-    num_hashes += 1 # the root
+        potential_hashes_in_level = math.ceil(potential_hashes_in_level / arity)
+        current_level += 1
     return num_hashes
 
 segment_sizes : List[int] = []
@@ -137,11 +146,8 @@ total_chunk_bytes = 0
 total_naive_bytes = 0
 total_hash_bytes = 0
 total_segsize_digest = RawTDigest()
-
+total_blocks = 0
 block : int
-
-
-
 print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
 for f in files:
     t0 = time.time()
@@ -157,6 +163,7 @@ for f in files:
     for block in block_traces:
         traces = block_traces[block]
         blocks += 1
+        total_blocks +=1
         if len(traces)==0:
             logging.debug(f"Block {block} is empty")
             continue
@@ -209,7 +216,7 @@ for f in files:
         # block-level segment stats
         if args.detail_level >=1:
             stats=sparkline_sizes(block_segsizes)
-            print(f"Block {block}: segs={len(block_segsizes)}"+stats)
+            print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
 
         block_executed_bytes = 0
         block_chunk_bytes = 0
@@ -258,7 +265,7 @@ for f in files:
 
         block_chunk_waste = block_chunk_bytes - block_executed_bytes
         block_chunk_wasted_ratio = block_chunk_waste / block_chunk_bytes * 100
-        block_hash_bytes = merklize(chunkmap) * args.hash_size
+        block_hash_bytes = merklize(chunkmap, args.arity, max_chunks) * args.hash_size
         block_merklization_bytes = block_chunk_bytes + block_hash_bytes
         block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
 
@@ -303,6 +310,6 @@ for f in files:
     total_merklization_bytes = total_chunk_bytes + total_hash_bytes
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
-        f"running total:\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
+        f"running total: blocks={total_blocks}\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
         f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t"
-        f"estimated median:{total_segsize_digest.quantile(0.5)}")
+        f"\testimated median:{total_segsize_digest.quantile(0.5)}")
