@@ -1,17 +1,18 @@
-import collections
+import json
+import argparse
+import gzip
 import json
 import logging
 import math
-import argparse
 import os
-import gzip
 import statistics
 import time
+from typing import Dict, List, TypedDict
 
-from roaringbitmap import RoaringBitmap, ImmutableRoaringBitmap, MultiRoaringBitmap
-from typing import Dict, List, TypedDict, AnyStr
-from collections import defaultdict
+from roaringbitmap import RoaringBitmap, ImmutableRoaringBitmap
 from sparklines import sparklines
+from tdigest import RawTDigest
+
 
 def represent_contract(bytemap, chunkmap):
     contract_representation = ""
@@ -19,13 +20,13 @@ def represent_contract(bytemap, chunkmap):
         if b % args.chunk_size == 0:
             contract_representation += "|"
         b_in_chunkmap = (b // args.chunk_size) in chunkmap
-        char = "."
+        char = "."      # this is uninteresting: contract byte that wasn't executed nor chunked
         if b in bytemap:
-            char = 'X'
+            char = 'X'  # This is bad: executed bytecode that didn't get merklized
         if b_in_chunkmap:
-            char = 'm'
+            char = 'm'  # this is overhead: merklized but unexecuted code
         if b in bytemap and b_in_chunkmap:
-            char = "O"
+            char = "M"  # this is OK: executed and merklized code
         contract_representation += char
     print(contract_representation,"\n")
 
@@ -135,8 +136,11 @@ total_executed_bytes = 0
 total_chunk_bytes = 0
 total_naive_bytes = 0
 total_hash_bytes = 0
+total_segsize_digest = RawTDigest()
 
 block : int
+
+
 
 print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
 for f in files:
@@ -149,6 +153,7 @@ for f in files:
     file_contract_bytes = 0
     file_hash_bytes = 0
     file_segsizes : List[int] = []
+    file_segsize_digest = RawTDigest()
     for block in block_traces:
         traces = block_traces[block]
         blocks += 1
@@ -267,6 +272,8 @@ for f in files:
         file_contract_bytes += block_contract_bytes
         file_hash_bytes += block_hash_bytes
         file_segsizes += block_segsizes
+        #file_segsize_digest.batch_update(block_segsizes)
+        #file_segsize_digest.compress()
 
         #total_chunk_bytes += block_chunk_bytes
         #total_executed_bytes += block_executed_bytes
@@ -274,7 +281,10 @@ for f in files:
         #total_hash_bytes += block_hash_bytes
         #total_segsizes += block_segsizes
 
+
     file_segsizes = sorted(file_segsizes)
+    for s in file_segsizes:
+        total_segsize_digest.insert(s)
     file_merklization_bytes = file_chunk_bytes + file_hash_bytes
     file_merklization_overhead_ratio = (file_merklization_bytes / file_executed_bytes - 1) * 100
     t_file = time.time() - t0
@@ -294,4 +304,5 @@ for f in files:
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
         f"running total:\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
-        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t")
+        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t"
+        f"estimated median:{total_segsize_digest.quantile(0.5)}")
