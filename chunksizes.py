@@ -40,16 +40,17 @@ def sparkline_sizes(sizes : List) -> str :
     # sizes is sorted so we can take advantage of that to accelerate things
     median = statistics.median_low(sizes)
     bucket_size = 2
-    top_bucket = 2*median # up to median there's half of the items. Since that's typically a short range anyway, let's show some more.
-    buckets_max = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
-    if len(buckets_max)==0:
+    top_bucket = 2 * median # up to median there's half of the items. Since that's typically a short range anyway, let's show twice that.
+    buckets_maxcontent = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
+    if len(buckets_maxcontent)==0:
         logging.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}")
         return ""
-    buckets_contents = [0 for b in buckets_max]
+    buckets_contents = [0 for b in buckets_maxcontent]
+    maxbucket = len(buckets_maxcontent)
     count = 0
     for s in sizes:
         i = math.ceil(s / bucket_size)
-        if i >= len(buckets_contents):
+        if i >= maxbucket:
             break
         count += 1
         i = clamp(i, 0, len(buckets_contents) - 1)
@@ -57,8 +58,7 @@ def sparkline_sizes(sizes : List) -> str :
 
     sl = sparklines(buckets_contents)[0]
     remaining = (1 - count/len(sizes)) * 100
-    # stats=f"\t\tavg={mean:.0f}\t\tstdev={sd:.0f}\t\tmedian={median}\t\t2{sl}{buckets_max[-1]}+"
-    line = f"\t\tmedian={median}\t\t{buckets_max[0]}{sl}{buckets_max[-1]} (+{remaining:.0f}% more)"
+    line = f"\t\tmedian={median}\t\t{buckets_maxcontent[0]}{sl}{buckets_maxcontent[-1]} (+{remaining:.0f}% more)"
     return line
 
 parser = argparse.ArgumentParser(description='Apply chunking to transaction segments',
@@ -85,12 +85,10 @@ contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':R
 
 max_chunks = MAXCODESIZE // args.chunk_size
 # bitmaps representing the bytes covered by each chunk. They are ANDed with the bitmaps of executed bytes
-chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)).freeze() for x in
-                  range(0, max_chunks + 1)])
+#chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)).freeze() for x in range(0, max_chunks + 1)])
 
 # bitmaps representing which nodes in level N of the tree connect to the same parent in level N-1
-merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in
-                range(0, len(chunkificators) // args.arity + 1)])
+#merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in range(0, len(chunkificators) // args.arity + 1)])
 
 # calculate the number of hashes needed to merklize the given bitmap of chunks
 def merklize(chunkmap : ImmutableRoaringBitmap):
@@ -114,10 +112,14 @@ def merklize(chunkmap : ImmutableRoaringBitmap):
         bits = []
         max_hash_in_level = map.max() // args.arity
         for i in range(0, max_hash_in_level + 1):
-            if not map.isdisjoint(merklizators[i]):
+            siblings_start = i * args.arity
+            siblings_end = (i + 1) * args.arity
+            #if not map.isdisjoint(merklizators[i]):
+            overlap = map.clamp(siblings_start, siblings_end)
+            if len(overlap) != 0:
                 bits.append(i)
         # switch map to parents'
-        map = RoaringBitmap(bits)
+        map = RoaringBitmap(bits).freeze()
         potential_hashes_in_level = math.ceil(potential_hashes_in_level / args.arity)
         levels_done += 1
     num_hashes += 1 # the root
@@ -167,7 +169,7 @@ for f in files:
                 codehash : str = t["CodeHash"]
                 data = dict_contracts.get(codehash)
                 if data is None:
-                    bytemap = RoaringBitmap().clamp(0,MAXCODESIZE)
+                    bytemap = RoaringBitmap()
                     instances = 1
                     size = t['CodeSize']
                 else:
@@ -190,12 +192,8 @@ for f in files:
 
                 # transaction-level segment stats
                 if args.detail_level >= 3:
-                    sd = 0
-                    if len(tx_segsizes)>2:
-                        sd = statistics.stdev(tx_segsizes)
-                        qt = statistics.quantiles(tx_segsizes)
                     print(f"Block {block} codehash={codehash} tx={t['TxAddr']} segs={len(tx_segsizes)} :"
-                                 f"\t\tavg={statistics.mean(tx_segsizes):.0f}\t\tstdev={sd:.0f}\t\tntiles={qt}")
+                          f"segment sizes:{sparkline_sizes(tx_segsizes)}")
                 block_segsizes += sorted(tx_segsizes)
 
         if len(block_segsizes) == 0:
@@ -212,18 +210,28 @@ for f in files:
         block_chunk_bytes = 0
         block_contract_bytes = 0
 
-        # chunkification
+        # chunkification of the contracts executed in the block
         for codehash, data in dict_contracts.items():
             instances = data['instances']
             codesize = data['size']
-            bytemap = data['map'].freeze()
+            bytemap : ImmutableRoaringBitmap = data['map'].freeze()
             executed_bytes = len(bytemap)
             max_possible_chunk = bytemap.max() // args.chunk_size
             chunks = []
             for c in range(0, max_possible_chunk+1):
-                if not bytemap.isdisjoint(chunkificators[c]):
+                chunk_start = c * args.chunk_size
+                chunk_stop = (c+1) * args.chunk_size
+                #chunkrange = range(chunkstart, chunkstop)
+                #z1 = len(bytemap.clamp(chunkstart, chunkstop)) == 0
+                #z2 = bytemap.intersection_len(chunkrange) == 0
+                #z3 = bytemap.isdisjoint(chunkrange)
+                #assert(z1 == z2 and z2 == z3)
+                #chunkificator = chunkificators[c]
+                #if not bytemap.isdisjoint(chunkificator):
+                overlap = bytemap.clamp(chunk_start, chunk_stop)
+                if len(overlap) != 0:
                     chunks.append(c)
-            chunkmap = RoaringBitmap(chunks).clamp(0,len(chunkificators))
+            chunkmap = RoaringBitmap(chunks).freeze()
             chunked_bytes = len(chunks) * args.chunk_size
             chunked_executed_ratio = chunked_bytes // executed_bytes
             highlighter : str = ""
