@@ -42,6 +42,9 @@ def sparkline_sizes(sizes : List) -> str :
     bucket_size = 2
     top_bucket = 2*median # up to median there's half of the items. Since that's typically a short range anyway, let's show some more.
     buckets_max = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
+    if len(buckets_max)==0:
+        logging.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}")
+        return ""
     buckets_contents = [0 for b in buckets_max]
     count = 0
     for s in sizes:
