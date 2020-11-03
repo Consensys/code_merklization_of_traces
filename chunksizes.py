@@ -102,6 +102,7 @@ def merklize(chunkmap : ImmutableRoaringBitmap, arity : int, max_chunks : int):
     # L2    0       1
     # L3    0
     num_levels = math.log(max_chunks) / math.log(arity)
+    assert(len(chunkmap) <= max_chunks)
     current_level = 0
     num_hashes = 0
     potential_hashes_in_level = max_chunks
@@ -226,7 +227,7 @@ for f in files:
         for codehash, data in dict_contracts.items():
             instances = data['instances']
             codesize = data['size']
-            bytemap : ImmutableRoaringBitmap = data['map'].freeze()
+            bytemap : ImmutableRoaringBitmap = data['map']#.freeze()
             executed_bytes = len(bytemap)
             max_possible_chunk = bytemap.max() // args.chunk_size
             chunks = []
@@ -237,8 +238,8 @@ for f in files:
                 for c in range(0, max_possible_chunk+1):
                     chunk_start = c * args.chunk_size
                     chunk_stop = (c+1) * args.chunk_size
-                    #chunkrange = range(chunkstart, chunkstop)
-                    #z1 = len(bytemap.clamp(chunkstart, chunkstop)) == 0
+                    #chunkrange = range(chunk_start, chunk_stop)
+                    #z1 = len(bytemap.clamp(chunk_start, chunk_stop)) == 0 #fastest
                     #z2 = bytemap.intersection_len(chunkrange) == 0
                     #z3 = bytemap.isdisjoint(chunkrange)
                     #assert(z1 == z2 and z2 == z3)
