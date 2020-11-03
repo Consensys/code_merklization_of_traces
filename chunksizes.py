@@ -230,21 +230,25 @@ for f in files:
             executed_bytes = len(bytemap)
             max_possible_chunk = bytemap.max() // args.chunk_size
             chunks = []
-            for c in range(0, max_possible_chunk+1):
-                chunk_start = c * args.chunk_size
-                chunk_stop = (c+1) * args.chunk_size
-                #chunkrange = range(chunkstart, chunkstop)
-                #z1 = len(bytemap.clamp(chunkstart, chunkstop)) == 0
-                #z2 = bytemap.intersection_len(chunkrange) == 0
-                #z3 = bytemap.isdisjoint(chunkrange)
-                #assert(z1 == z2 and z2 == z3)
-                #chunkificator = chunkificators[c]
-                #if not bytemap.isdisjoint(chunkificator):
-                overlap = bytemap.clamp(chunk_start, chunk_stop)
-                if len(overlap) != 0:
-                    chunks.append(c)
-            chunkmap = RoaringBitmap(chunks).freeze()
-            chunked_bytes = len(chunks) * args.chunk_size
+            if args.chunk_size == 1:
+                # special case for speed
+                chunkmap = bytemap
+            else:
+                for c in range(0, max_possible_chunk+1):
+                    chunk_start = c * args.chunk_size
+                    chunk_stop = (c+1) * args.chunk_size
+                    #chunkrange = range(chunkstart, chunkstop)
+                    #z1 = len(bytemap.clamp(chunkstart, chunkstop)) == 0
+                    #z2 = bytemap.intersection_len(chunkrange) == 0
+                    #z3 = bytemap.isdisjoint(chunkrange)
+                    #assert(z1 == z2 and z2 == z3)
+                    #chunkificator = chunkificators[c]
+                    #if not bytemap.isdisjoint(chunkificator):
+                    overlap = bytemap.clamp(chunk_start, chunk_stop)
+                    if len(overlap) != 0:
+                        chunks.append(c)
+                chunkmap = RoaringBitmap(chunks).freeze()
+            chunked_bytes = len(chunkmap) * args.chunk_size
             chunked_executed_ratio = chunked_bytes // executed_bytes
             highlighter : str = ""
             if chunked_executed_ratio > 1:
