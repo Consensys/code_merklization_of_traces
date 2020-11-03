@@ -272,7 +272,7 @@ for f in files:
         # block-level merklization stats
         if args.detail_level >=1:
             #logging.info(f"Block {block}: txs={len(traces)}\treused_contracts={reused_contracts}\tcontracts={block_contract_bytes//1024}K\texecuted={block_executed_bytes//1024}K\tchunked={block_chunk_bytes//1024}K\twasted={block_chunk_wasted_ratio:.0f}%")
-            print(f"Block {block}: overhead={block_merklization_overhead_ratio:.1f}%\texec={block_executed_bytes/1024:.0f}K\tmerklization= {block_merklization_bytes/1024:.1f} K = {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K")
+            print(f"Block {block}: overhead={block_merklization_overhead_ratio:.1f}%\texec={block_executed_bytes/1024:.1f}K\tmerklization= {block_merklization_bytes/1024:.1f} K = {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K")
 
         file_chunk_bytes += block_chunk_bytes
         file_executed_bytes += block_executed_bytes
@@ -297,10 +297,10 @@ for f in files:
     t_file = time.time() - t0
     # file-level merklization stats
     print(
-        f"file {f}:\toverhead={file_merklization_overhead_ratio:.1f}%\texec={file_executed_bytes / 1024:.0f}K\t"
+        f"file {f}:\toverhead={file_merklization_overhead_ratio:.1f}%\texec={file_executed_bytes / 1024:.1f}K\t"
         f"merklization={file_merklization_bytes/1024:.1f}K = {file_chunk_bytes / 1024:.1f} K chunks + {file_hash_bytes / 1024:.1f} K hashes\t"
         f"segment sizes:{sparkline_sizes(file_segsizes)}")
-    logging.info(f"file {f}: {blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:0.1f}bps.")
+    logging.info(f"file {f}: {blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:.1f}bps.")
 
     total_chunk_bytes += file_chunk_bytes
     total_executed_bytes += file_executed_bytes
@@ -310,6 +310,6 @@ for f in files:
     total_merklization_bytes = total_chunk_bytes + total_hash_bytes
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
-        f"running total: blocks={total_blocks}\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.0f}K\t"
+        f"running total: blocks={total_blocks}\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.1f}K\t"
         f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t"
-        f"\testimated median:{total_segsize_digest.quantile(0.5)}")
+        f"\testimated median:{total_segsize_digest.quantile(0.5):.1f}")
