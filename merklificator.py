@@ -62,8 +62,10 @@ def sparkline_sizes(sizes : List) -> str :
     line = f"median={median}\t\t{buckets_maxcontent[0]}{sl}{buckets_maxcontent[-1]} (+{remaining:.0f}% more)"
     return line
 
-parser = argparse.ArgumentParser(description='Apply chunking to transaction segments',
-                                 epilog='Reads a directory or a list of json files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes')
+
+parser = argparse.ArgumentParser(
+    description='Reads a directory or a list of json files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes',
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("traces_dir", help="Directory with trace files in .json.gz format", nargs='+')
 parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes", type=int, default=32)
 parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree", type=int, default=32)
