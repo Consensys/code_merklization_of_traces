@@ -230,7 +230,7 @@ for f in files:
             bytemap : ImmutableRoaringBitmap = data['map']#.freeze()
             executed_bytes = len(bytemap)
             max_possible_chunk = bytemap.max() // args.chunk_size
-            chunks = []
+            chunksb = RoaringBitmap()
             if args.chunk_size == 1:
                 # special case for speed
                 chunkmap = bytemap
@@ -247,8 +247,8 @@ for f in files:
                     #if not bytemap.isdisjoint(chunkificator):
                     overlap = bytemap.clamp(chunk_start, chunk_stop)
                     if len(overlap) != 0:
-                        chunks.append(c)
-                chunkmap = RoaringBitmap(chunks).freeze()
+                        chunksb.add(c)
+                chunkmap = chunksb.freeze()
             chunked_bytes = len(chunkmap) * args.chunk_size
             chunked_executed_ratio = chunked_bytes // executed_bytes
             highlighter : str = ""
