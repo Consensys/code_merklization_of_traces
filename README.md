@@ -17,6 +17,8 @@ Those traces are big (~300MB for a 1000 block file), so you will probably want t
 
 Then, just run `python merklificator directory_with_traces`.
 
+You can find some sample trace files in the releases section of this repo.
+
 ```
 $ python merklificator.py --help
 usage: merklificator.py [-h] [-s CHUNK_SIZE] [-m HASH_SIZE] [-a ARITY] [-v LOG] [-j JOB_ID] [-d DETAIL_LEVEL] traces_dir [traces_dir ...]
