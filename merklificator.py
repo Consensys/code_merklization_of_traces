@@ -222,6 +222,7 @@ for f in files:
             print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
 
         block_executed_bytes = 0
+        block_hash_bytes = 0
         block_chunk_bytes = 0
         block_contract_bytes = 0
 
@@ -269,10 +270,10 @@ for f in files:
             block_chunk_bytes += chunked_bytes
             block_contract_bytes += codesize
             block_executed_bytes += executed_bytes
+            block_hash_bytes += merklize(chunkmap, args.arity, max_chunks) * args.hash_size
 
         block_chunk_waste = block_chunk_bytes - block_executed_bytes
         block_chunk_wasted_ratio = block_chunk_waste / block_chunk_bytes * 100
-        block_hash_bytes = merklize(chunkmap, args.arity, max_chunks) * args.hash_size
         block_merklization_bytes = block_chunk_bytes + block_hash_bytes
         block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
 
