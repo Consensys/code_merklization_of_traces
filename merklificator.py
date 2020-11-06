@@ -39,9 +39,9 @@ def clamp(n : int, min_n : int, max_n : int) -> int:
 def sparkline_sizes(sizes : List) -> str :
     # sizes is sorted so we can take advantage of that to accelerate things
     median = statistics.median_low(sizes)
-    bucket_size = 2
+    bucket_size = 1
     top_bucket = 2 * median # up to median there's half of the items. Since that's typically a short range anyway, let's show twice that.
-    buckets_maxcontent = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
+    buckets_maxcontent = range(1, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
     if len(buckets_maxcontent)==0:
         logger.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}, block={block}")
         return f"CAN'T BUCKETIZE! sizes={sizes}"
@@ -49,12 +49,13 @@ def sparkline_sizes(sizes : List) -> str :
     maxbucket = len(buckets_maxcontent)
     count = 0
     for s in sizes:
-        i = math.ceil(s / bucket_size)
-        if i >= maxbucket:
+        b = math.ceil(s / bucket_size)
+        if b >= maxbucket:
+            # since the sizes are sorted, at this point we know we're finished
             break
         count += 1
-        i = clamp(i, 0, len(buckets_contents) - 1)
-        buckets_contents[i] += 1
+        b = clamp(b, 0, len(buckets_contents) - 1)
+        buckets_contents[b] += 1
 
     sl = sparklines(buckets_contents)[0]
     remaining = (1 - count/len(sizes)) * 100
@@ -147,8 +148,8 @@ if len(args.traces_dir) == 1 and os.path.isdir(args.traces_dir[0]):
 else:
     files = sorted(args.traces_dir)
 total_executed_bytes = 0
-total_chunk_bytes = 0
-total_hash_bytes = 0
+total_chunks = 0
+total_hashes = 0
 total_segsize_digest = RawTDigest()
 total_blocks = 0
 block : int
@@ -159,8 +160,8 @@ for f in files:
     with gzip.open(f, 'rb') as gzf:
         block_traces = json.load(gzf)
     file_executed_bytes = 0
-    file_chunk_bytes = 0
-    file_hash_bytes = 0
+    file_chunks = 0
+    file_hashes = 0
     file_segsizes : List[int] = []
     file_segsize_digest = RawTDigest()
     for block in block_traces:
@@ -224,7 +225,6 @@ for f in files:
         block_executed_bytes = 0
         block_hashes = 0
         block_chunks = 0
-        block_chunk_bytes = 0
         block_contract_bytes = 0
 
         # chunkification of the contracts executed in the block
@@ -282,10 +282,10 @@ for f in files:
             block_hashes += merklization_hashes
             block_chunks += chunks
 
-        block_chunk_bytes += args.chunk_size * block_chunks
-        block_chunk_waste = block_chunk_bytes - block_executed_bytes
-        block_chunk_wasted_ratio = block_chunk_waste / block_chunk_bytes * 100
-        block_hash_bytes = block_hashes * args.chunk_size
+        block_chunk_waste = block_chunks * args.chunk_size - block_executed_bytes
+        block_chunk_wasted_ratio = block_chunk_waste / block_chunks * 100
+        block_chunk_bytes = block_chunks * args.chunk_size
+        block_hash_bytes = block_hashes * args.hash_size
         block_merklization_bytes = block_chunk_bytes + block_hash_bytes
         block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
 
@@ -295,15 +295,13 @@ for f in files:
             print(f"Block {block}: "
                   f"overhead={block_merklization_overhead_ratio:.1f}%\t"
                   f"exec={block_executed_bytes/1024:.1f}K\t"
-                  f"chunks={block_chunks}\t"
-                  f"hashes={block_hashes}\t"
                   f"merklization= {block_merklization_bytes/1024:.1f} K "
-                  f"= {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K"
+                  f"= {block_chunk_bytes /1024:.1f} K ({block_chunks} chunks) + {block_hash_bytes /1024:.1f} K ({block_hashes} hashes)"
             )
 
-        file_chunk_bytes += block_chunk_bytes
+        file_chunks += block_chunks
         file_executed_bytes += block_executed_bytes
-        file_hash_bytes += block_hash_bytes
+        file_hashes += block_hashes
         file_segsizes += block_segsizes
         #file_segsize_digest.batch_update(block_segsizes)
         #file_segsize_digest.compress()
@@ -315,9 +313,12 @@ for f in files:
         #total_segsizes += block_segsizes
 
 
+    # sorting helps other steps be faster (e.g., stats.median)
     file_segsizes = sorted(file_segsizes)
     for s in file_segsizes:
         total_segsize_digest.insert(s)
+    file_chunk_bytes = file_chunks * args.chunk_size
+    file_hash_bytes = file_hashes * args.hash_size
     file_merklization_bytes = file_chunk_bytes + file_hash_bytes
     file_merklization_overhead_ratio = (file_merklization_bytes / file_executed_bytes - 1) * 100
     t_file = time.time() - t0
@@ -327,16 +328,17 @@ for f in files:
         f"overhead={file_merklization_overhead_ratio:.1f}%\t"
         f"exec={file_executed_bytes / 1024:.1f}K\t"
         f"merklization= {file_merklization_bytes/1024:.1f} K "
-        f"= {file_chunk_bytes / 1024:.1f} K chunks + {file_hash_bytes / 1024:.1f} K hashes\t"
+        f"= {file_chunk_bytes / 1024:.1f} K ({file_chunks} chunks) + {file_hash_bytes / 1024:.1f} K ({file_hashes} hashes)\t"
         f"segment sizes:{sparkline_sizes(file_segsizes)}"
     )
     logger.info(f"file {f}: "
                  f"{blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:.1f}bps.")
 
-    total_chunk_bytes += file_chunk_bytes
+    total_chunks += file_chunks
     total_executed_bytes += file_executed_bytes
-    total_hash_bytes += file_hash_bytes
-
+    total_hashes += file_hashes
+    total_chunk_bytes = total_chunks * args.chunk_size
+    total_hash_bytes = total_hashes * args.hash_size
     total_merklization_bytes = total_chunk_bytes + total_hash_bytes
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
@@ -344,5 +346,5 @@ for f in files:
         f"blocks={total_blocks}\t"
         f"overhead={total_merklization_overhead_ratio:.1f}%\t"
         f"exec={total_executed_bytes / 1024:.1f}K\t"
-        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t\t"
+        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K ({total_chunks} chunks) + {total_hash_bytes / 1024:.1f} K ({total_hashes} hashes)\t\t"
         f"estimated median:{total_segsize_digest.quantile(0.5):.1f}")
