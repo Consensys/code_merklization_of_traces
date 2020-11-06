@@ -1,4 +1,3 @@
-import json
 import argparse
 import gzip
 import json
@@ -9,7 +8,7 @@ import statistics
 import time
 from typing import Dict, List, TypedDict
 
-from roaringbitmap import RoaringBitmap, ImmutableRoaringBitmap
+from roaringbitmap import RoaringBitmap
 from sparklines import sparklines
 from tdigest import RawTDigest
 
@@ -44,7 +43,7 @@ def sparkline_sizes(sizes : List) -> str :
     top_bucket = 2 * median # up to median there's half of the items. Since that's typically a short range anyway, let's show twice that.
     buckets_maxcontent = range(2, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
     if len(buckets_maxcontent)==0:
-        logging.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}, block={block}")
+        logger.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}, block={block}")
         return f"CAN'T BUCKETIZE! sizes={sizes}"
     buckets_contents = [0 for b in buckets_maxcontent]
     maxbucket = len(buckets_maxcontent)
@@ -81,6 +80,7 @@ if not isinstance(loglevel_num, int):
     raise ValueError('Invalid log level: %s' % args.loglevel)
 logging.basicConfig(level=loglevel_num, format= \
     ("" if args.job_ID is None else f'{args.job_ID:4} | ') + '%(asctime)s %(message)s', datefmt='%H:%M:%S')
+logger = logging.getLogger("")
 
 MAXCODESIZE = 0x6000 # from EIP 170
 
@@ -88,13 +88,13 @@ contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':R
 
 max_chunks = MAXCODESIZE // args.chunk_size
 # bitmaps representing the bytes covered by each chunk. They are ANDed with the bitmaps of executed bytes
-#chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)).freeze() for x in range(0, max_chunks + 1)])
+#chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)) for x in range(0, max_chunks + 1)])
 
 # bitmaps representing which nodes in level N of the tree connect to the same parent in level N-1
-#merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)).freeze() for x in range(0, len(chunkificators) // args.arity + 1)])
+#merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)) for x in range(0, len(chunkificators) // args.arity + 1)])
 
 # calculate the number of hashes needed to merklize the given bitmap of chunks
-def merklize(chunkmap : ImmutableRoaringBitmap, arity : int, max_chunks : int):
+def merklize(chunkmap : RoaringBitmap, arity : int, max_chunks : int):
     # max number of chunks = MAXCODESIZE // chunksize
     # hashes at tree level 0 = as many as chunks
     # max hashes at tree level N = (num of level N-1) / arity
@@ -110,13 +110,14 @@ def merklize(chunkmap : ImmutableRoaringBitmap, arity : int, max_chunks : int):
     potential_hashes_in_level = max_chunks
     map = chunkmap
     while potential_hashes_in_level >= arity:
-        logging.debug(f"L{current_level} pot_hashes={potential_hashes_in_level} num_hashes={len(map)}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"L{current_level} pot_hashes={potential_hashes_in_level} num_hashes={len(map)}")
         bits = []
         max_hash_in_level = map.max() // arity
         hashes_missing = 0
         for i in range(0, max_hash_in_level + 1):
             siblings_start = i * arity
-            siblings_end = (i + 1) * arity
+            siblings_end = siblings_start + arity
             #if not map.isdisjoint(merklizators[i]):
             overlap = map.clamp(siblings_start, siblings_end)  # stop excluded from interval
             lo = len(overlap)
@@ -130,10 +131,11 @@ def merklize(chunkmap : ImmutableRoaringBitmap, arity : int, max_chunks : int):
             hashes_missing = arity - lo
             num_hashes += hashes_missing
 
-        logging.debug(f"L{current_level}: bitmap={bits}, num_missing_hashes={hashes_missing}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"L{current_level}: bitmap={bits}, num_missing_hashes={hashes_missing}")
 
         # switch map to parents'
-        map = RoaringBitmap(bits).freeze()
+        map = RoaringBitmap(bits)
         potential_hashes_in_level = math.ceil(potential_hashes_in_level / arity)
         current_level += 1
     return num_hashes
@@ -146,7 +148,6 @@ else:
     files = sorted(args.traces_dir)
 total_executed_bytes = 0
 total_chunk_bytes = 0
-total_naive_bytes = 0
 total_hash_bytes = 0
 total_segsize_digest = RawTDigest()
 total_blocks = 0
@@ -159,7 +160,6 @@ for f in files:
         block_traces = json.load(gzf)
     file_executed_bytes = 0
     file_chunk_bytes = 0
-    file_contract_bytes = 0
     file_hash_bytes = 0
     file_segsizes : List[int] = []
     file_segsize_digest = RawTDigest()
@@ -168,7 +168,7 @@ for f in files:
         blocks += 1
         total_blocks +=1
         if len(traces)==0:
-            logging.debug(f"Block {block} is empty")
+            logger.debug(f"Block {block} is empty")
             continue
         dict_contracts : Dict[str, contract_data] = {}
         reused_contracts = 0
@@ -180,7 +180,7 @@ for f in files:
         for t in traces:
             tx_hash: str = t["Tx"]
             if tx_hash is not None:
-                logging.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
+                logger.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
                 codehash : str = t["CodeHash"]
                 data = dict_contracts.get(codehash)
                 if data is None:
@@ -212,7 +212,7 @@ for f in files:
                 block_segsizes += sorted(tx_segsizes)
 
         if len(block_segsizes) == 0:
-            logging.debug(f"Block {block} had no segments")
+            logger.debug(f"Block {block} had no segments")
             continue
 
         block_segsizes = sorted(block_segsizes)
@@ -222,7 +222,8 @@ for f in files:
             print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
 
         block_executed_bytes = 0
-        block_hash_bytes = 0
+        block_hashes = 0
+        block_chunks = 0
         block_chunk_bytes = 0
         block_contract_bytes = 0
 
@@ -230,7 +231,7 @@ for f in files:
         for codehash, data in dict_contracts.items():
             instances = data['instances']
             codesize = data['size']
-            bytemap : ImmutableRoaringBitmap = data['map']#.freeze()
+            bytemap = data['map']
             executed_bytes = len(bytemap)
             max_possible_chunk = bytemap.max() // args.chunk_size
             chunksb = RoaringBitmap()
@@ -251,40 +252,57 @@ for f in files:
                     overlap = bytemap.clamp(chunk_start, chunk_stop)
                     if len(overlap) != 0:
                         chunksb.add(c)
-                chunkmap = chunksb.freeze()
-            chunked_bytes = len(chunkmap) * args.chunk_size
+                chunkmap = chunksb
+            chunks = len(chunkmap)
+            chunked_bytes =  chunks * args.chunk_size
             chunked_executed_ratio = chunked_bytes // executed_bytes
+            merklization_hashes = merklize(chunkmap, args.arity, max_chunks)
             highlighter : str = ""
             if chunked_executed_ratio > 1:
                 highlighter = "\t\t" + "!"*(chunked_executed_ratio-1)
                 #represent_contract(bytemap, chunkmap)
             if chunked_bytes < executed_bytes: # sanity check
-                logging.info(f"Contract {codehash} in block {block} executes {executed_bytes} but merklizes to {chunked_bytes}")
+                logger.info(f"Contract {codehash} in block {block} executes {executed_bytes} but merklizes to {chunked_bytes}")
                 highlighter = "\t\t" + "??????"
                 represent_contract(bytemap, chunkmap)
 
             chunk_waste = (1 - executed_bytes / chunked_bytes) * 100
             if args.detail_level >=2:
-                print(f"Contract {codehash}: {instances} txs, size {codesize}\texecuted {executed_bytes}\tchunked {chunked_bytes}\twasted={chunk_waste:.0f}%"+highlighter)
+                print(f"Contract {codehash}: "
+                      f"{instances} txs "
+                      f"size {codesize}\t"
+                      f"executed {executed_bytes}\t"
+                      f"chunked {chunked_bytes}\t"
+                      f"wasted={chunk_waste:.0f}%\t"
+                      f"hashes={merklization_hashes}"
+                      +highlighter
+                )
 
-            block_chunk_bytes += chunked_bytes
-            block_contract_bytes += codesize
             block_executed_bytes += executed_bytes
-            block_hash_bytes += merklize(chunkmap, args.arity, max_chunks) * args.hash_size
+            block_hashes += merklization_hashes
+            block_chunks += chunks
 
+        block_chunk_bytes += args.chunk_size * block_chunks
         block_chunk_waste = block_chunk_bytes - block_executed_bytes
         block_chunk_wasted_ratio = block_chunk_waste / block_chunk_bytes * 100
+        block_hash_bytes = block_hashes * args.chunk_size
         block_merklization_bytes = block_chunk_bytes + block_hash_bytes
         block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
 
         # block-level merklization stats
         if args.detail_level >=1:
-            #logging.info(f"Block {block}: txs={len(traces)}\treused_contracts={reused_contracts}\tcontracts={block_contract_bytes//1024}K\texecuted={block_executed_bytes//1024}K\tchunked={block_chunk_bytes//1024}K\twasted={block_chunk_wasted_ratio:.0f}%")
-            print(f"Block {block}: overhead={block_merklization_overhead_ratio:.1f}%\texec={block_executed_bytes/1024:.1f}K\tmerklization= {block_merklization_bytes/1024:.1f} K = {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K")
+            #logger.info(f"Block {block}: txs={len(traces)}\treused_contracts={reused_contracts}\tcontracts={block_contract_bytes//1024}K\texecuted={block_executed_bytes//1024}K\tchunked={block_chunk_bytes//1024}K\twasted={block_chunk_wasted_ratio:.0f}%")
+            print(f"Block {block}: "
+                  f"overhead={block_merklization_overhead_ratio:.1f}%\t"
+                  f"exec={block_executed_bytes/1024:.1f}K\t"
+                  f"chunks={block_chunks}\t"
+                  f"hashes={block_hashes}\t"
+                  f"merklization= {block_merklization_bytes/1024:.1f} K "
+                  f"= {block_chunk_bytes/1024:.1f} + {block_hash_bytes/1024:.1f} K"
+            )
 
         file_chunk_bytes += block_chunk_bytes
         file_executed_bytes += block_executed_bytes
-        file_contract_bytes += block_contract_bytes
         file_hash_bytes += block_hash_bytes
         file_segsizes += block_segsizes
         #file_segsize_digest.batch_update(block_segsizes)
@@ -305,19 +323,26 @@ for f in files:
     t_file = time.time() - t0
     # file-level merklization stats
     print(
-        f"file {f}:\toverhead={file_merklization_overhead_ratio:.1f}%\texec={file_executed_bytes / 1024:.1f}K\t"
-        f"merklization={file_merklization_bytes/1024:.1f}K = {file_chunk_bytes / 1024:.1f} K chunks + {file_hash_bytes / 1024:.1f} K hashes\t"
-        f"segment sizes:{sparkline_sizes(file_segsizes)}")
-    logging.info(f"file {f}: {blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:.1f}bps.")
+        f"file {f}: "
+        f"overhead={file_merklization_overhead_ratio:.1f}%\t"
+        f"exec={file_executed_bytes / 1024:.1f}K\t"
+        f"merklization= {file_merklization_bytes/1024:.1f} K "
+        f"= {file_chunk_bytes / 1024:.1f} K chunks + {file_hash_bytes / 1024:.1f} K hashes\t"
+        f"segment sizes:{sparkline_sizes(file_segsizes)}"
+    )
+    logger.info(f"file {f}: "
+                 f"{blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:.1f}bps.")
 
     total_chunk_bytes += file_chunk_bytes
     total_executed_bytes += file_executed_bytes
-    total_naive_bytes += file_contract_bytes
     total_hash_bytes += file_hash_bytes
 
     total_merklization_bytes = total_chunk_bytes + total_hash_bytes
     total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
     print(
-        f"running total: blocks={total_blocks}\toverhead={total_merklization_overhead_ratio:.1f}%\texec={total_executed_bytes / 1024:.1f}K\t"
-        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t"
-        f"\testimated median:{total_segsize_digest.quantile(0.5):.1f}")
+        f"running total: "
+        f"blocks={total_blocks}\t"
+        f"overhead={total_merklization_overhead_ratio:.1f}%\t"
+        f"exec={total_executed_bytes / 1024:.1f}K\t"
+        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K chunks + {total_hash_bytes / 1024:.1f} K hashes\t\t"
+        f"estimated median:{total_segsize_digest.quantile(0.5):.1f}")
