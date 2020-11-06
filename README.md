@@ -62,13 +62,13 @@ file /Users/mija/IGNORED BY TIMEMACHINE/traces-test/segs.json.gz: overhead=110.7
 16:16:25 file /Users/mija/IGNORED BY TIMEMACHINE/traces-test/segs.json.gz: 101 blocks in 11 seconds = 9.0bps.
 running total: blocks=101	overhead=110.7%	exec=9092.2K	merklization=19155.2K = 11695.1 K chunks + 7460.1 K hashes		estimated median:14.0
 ```
-This means that for block 9000095, the executed bytecode is 141.1KB, and the merklization is 179.5KB in 5743 chunks + 117.0K in 3745 hashes, totaling 296.5KB. Therefore the merklization caused a 104.5% of overhead over just sending the executed bytecode.
+This means that the execution of block 9000095 went through 13526 segments (AKA basic blocks), whose median length was 18 bytes, and with their length having the distribution shown to the right. The leftmost column of the sparkline shows length=2 and the rightmost column shows length=34. Apart from that, 25% of the samples had lengths over that range, and so didn't appear in the sparkline.
 
-In that same block there were 13526 segments (AKA basic blocks), and their median length was 18 bytes, with their length having the distribution shown to the right. The leftmost column of the sparkline shows length=2 and the rightmost column shows length=34. Apart from that, 25% of the samples had lengths over that range, and so didn't appear in the sparkline.
+In that block the executed bytecode was 141.1KB, and its merklization used 179.5KB in 5743 chunks + 117.0K in 3745 hashes, totaling 296.5KB. Therefore the merklization caused a 104.5% of overhead over just sending the executed bytecode.
 
-The sparkline only shows the range 2 to (2*median) because the distribution of lengths usually has a long, sparse tail that makes it harder to see the detail of the shorter lengths.
+The sparkline only shows the range 2 to (2*median) because the distribution of lengths is typically very skewed towards shorter lengths, while having a sparse tail of longer lengths that makes it harder to see the detail.
 
-The statistics for these blocks are carried over to get exact stats for the whole trace file. See line starting with `file segs.json.gz`.  
+The statistics for blocks are accumulated to get exact stats for the whole trace file. See line starting with `file segs.json.gz`.  
 
 Finally, the stats for all the files analyzed in the present run are accumulated into running stats, which are reported after each file.
 
