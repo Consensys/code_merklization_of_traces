@@ -1,4 +1,5 @@
 import argparse
+import collections
 import gzip
 import json
 import logging
@@ -11,6 +12,7 @@ from typing import Dict, List, TypedDict
 from roaringbitmap import RoaringBitmap
 from sparklines import sparklines
 from tdigest import RawTDigest
+from engineering_notation import EngNumber
 
 
 def represent_contract(bytemap, chunkmap):
@@ -64,39 +66,45 @@ def sparkline_sizes(sizes : List) -> str :
 
 
 parser = argparse.ArgumentParser(
-    description='Reads a directory or a list of json files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes',
+    description='Reads a directory or files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes',
+    epilog='Note that hash_sizes have no effect on the tree calculations; they are just used to get the bytes consumed by hashes.',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("traces_dir", help="Directory with trace files in .json.gz format", nargs='+')
-parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes", type=int, default=32)
-parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree", type=int, default=32)
+parser.add_argument("traces_dir", help="Directory with, or trace files in .json.gz format", nargs='+')
+parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes. Can be multiple space-separated values.", type=int, default=[32], nargs='*')
+parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree. Can be multiple space-separated values.", type=int, default=[32], nargs='*')
 parser.add_argument("-a", "--arity", help="Number of children per node of the Merkle tree", type=int, default=2)
-parser.add_argument("-v", "--log", help="Log level", type=str, default="INFO")
+parser.add_argument("-l", "--log", help="Log level", type=str, default="INFO")
 parser.add_argument("-j", "--job_ID", help="ID to distinguish in parallel runs", type=int, default=None)
 parser.add_argument("-d", "--detail_level", help="3=transaction, 2=contract, 1=block, 0=file. One level implies the lower ones.", type=int, default=1)
+parser.add_argument("-g", "--segment_stats", help="Whether to calculate and show segments stats", default=False, action='store_true')
 
 args = parser.parse_args()
 
 loglevel_num = getattr(logging, args.log.upper(), None)
 if not isinstance(loglevel_num, int):
-    raise ValueError('Invalid log level: %s' % args.loglevel)
+    raise ValueError(f"Invalid log level: {args.loglevel}")
 logging.basicConfig(level=loglevel_num, format= \
     ("" if args.job_ID is None else f'{args.job_ID:4} | ') + '%(asctime)s %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("")
+
+# help the IDE's autocomplete and typing
+chunk_sizes : List[int] = args.chunk_size
+hash_sizes : List[int] = args.hash_size
+traces_dir : List[str] = args.traces_dir
+arity : int = args.arity
+detail_level : int = args.detail_level
+segment_stats : bool = args.segment_stats
+
+del args
 
 MAXCODESIZE = 0x6000 # from EIP 170
 
 contract_data = TypedDict('contract_data', {'instances':int, 'size':int, 'map':RoaringBitmap}, total=True)
 
-max_chunks = MAXCODESIZE // args.chunk_size
-# bitmaps representing the bytes covered by each chunk. They are ANDed with the bitmaps of executed bytes
-#chunkificators = MultiRoaringBitmap([RoaringBitmap(range(x * args.chunk_size, (x+1) * args.chunk_size)) for x in range(0, max_chunks + 1)])
-
-# bitmaps representing which nodes in level N of the tree connect to the same parent in level N-1
-#merklizators = MultiRoaringBitmap([RoaringBitmap(range(x * args.arity, (x+1) * args.arity)) for x in range(0, len(chunkificators) // args.arity + 1)])
+#max_chunks = MAXCODESIZE // args.chunk_size
 
 # calculate the number of hashes needed to merklize the given bitmap of chunks
-def merklize(chunkmap : RoaringBitmap, arity : int, max_chunks : int):
-    # max number of chunks = MAXCODESIZE // chunksize
+def merklize(chunkmap : RoaringBitmap, arity : int, chunksize : int) -> int:
     # hashes at tree level 0 = as many as chunks
     # max hashes at tree level N = (num of level N-1) / arity
     # we assume fixed number of levels = log (max chunks) / log(arity)
@@ -104,6 +112,7 @@ def merklize(chunkmap : RoaringBitmap, arity : int, max_chunks : int):
     # L1    0   1   2
     # L2    0       1
     # L3    0
+    max_chunks = MAXCODESIZE // chunksize
     num_levels = math.log(max_chunks) / math.log(arity)
     assert(len(chunkmap) <= max_chunks)
     current_level = 0
@@ -120,7 +129,7 @@ def merklize(chunkmap : RoaringBitmap, arity : int, max_chunks : int):
             siblings_start = i * arity
             siblings_end = siblings_start + arity
             #if not map.isdisjoint(merklizators[i]):
-            overlap = map.clamp(siblings_start, siblings_end)  # stop excluded from interval
+            overlap = map.clamp(siblings_start, siblings_end)  # end excluded from interval
             lo = len(overlap)
             if lo == 0:
                 # these siblings' parent is not present in the tree
@@ -141,27 +150,51 @@ def merklize(chunkmap : RoaringBitmap, arity : int, max_chunks : int):
         current_level += 1
     return num_hashes
 
+def chunkmap_from_bytemap(bytemap: RoaringBitmap, chunk_size: int) -> RoaringBitmap:
+    max_contract_chunk = bytemap.max() // chunk_size
+    if chunk_size == 1:
+        # special case for speed
+        chunkmap = bytemap
+    else:
+        chunkmap = RoaringBitmap()
+        for c in range(0, max_contract_chunk + 1):
+            chunk_start = c * chunk_size
+            chunk_stop = (c + 1) * chunk_size
+            # chunkrange = range(chunk_start, chunk_stop)
+            # z1 = len(bytemap.clamp(chunk_start, chunk_stop)) == 0 #fastest
+            # z2 = bytemap.intersection_len(chunkrange) == 0
+            # z3 = bytemap.isdisjoint(chunkrange)
+            # assert(z1 == z2 and z2 == z3)
+            # chunkificator = chunkificators[c]
+            # if not bytemap.isdisjoint(chunkificator):
+            overlap = bytemap.clamp(chunk_start, chunk_stop)
+            if len(overlap) != 0:
+                chunkmap.add(c)
+    return chunkmap
+
+Chunkification_record = collections.namedtuple('Chunkification_record', [])
+
 segment_sizes : List[int] = []
 
-if len(args.traces_dir) == 1 and os.path.isdir(args.traces_dir[0]):
-    files = sorted([os.path.join(args.traces_dir[0], f) for f in os.listdir(args.traces_dir[0]) if (".json.gz" == f[-8:])])
+if len(traces_dir) == 1 and os.path.isdir(traces_dir[0]):
+    files = sorted([os.path.join(traces_dir[0], f) for f in os.listdir(traces_dir[0]) if (".json.gz" == f[-8:])])
 else:
-    files = sorted(args.traces_dir)
+    files = sorted(traces_dir)
 total_executed_bytes = 0
-total_chunks = 0
-total_hashes = 0
+total_hashes: List[int] = [0 for x in chunk_sizes]  # one element per chunk size
+total_chunks: List[int] = [0 for x in chunk_sizes]  # one element per chunk size
 total_segsize_digest = RawTDigest()
 total_blocks = 0
 block : int
-print(f"Chunking for tree arity={args.arity}, chunk size={args.chunk_size}, hash size={args.hash_size}")
+print(f"Chunking for tree arity={arity}, chunk size={chunk_sizes}, hash size={hash_sizes}")
 for f in files:
     t0 = time.time()
     blocks: int = 0
     with gzip.open(f, 'rb') as gzf:
         block_traces = json.load(gzf)
     file_executed_bytes = 0
-    file_chunks = 0
-    file_hashes = 0
+    file_hashes: List[int] = [0 for x in chunk_sizes]  # one element per chunk size
+    file_chunks: List[int] = [0 for x in chunk_sizes]  # one element per chunk size
     file_segsizes : List[int] = []
     file_segsize_digest = RawTDigest()
     for block in block_traces:
@@ -173,59 +206,75 @@ for f in files:
             continue
         dict_contracts : Dict[str, contract_data] = {}
         reused_contracts = 0
-        #block_num_bytes_code=0
-        #block_num_bytes_chunks=0
+        empty_transactions = 0
         num_bytes_code = 0
         num_bytes_chunks = 0
         block_segsizes : List[int] = []
+        block_numsegments = 0
         for t in traces:
             tx_hash: str = t["Tx"]
-            if tx_hash is not None:
-                logger.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
-                codehash : str = t["CodeHash"]
-                data = dict_contracts.get(codehash)
-                if data is None:
-                    bytemap = RoaringBitmap()
-                    instances = 1
-                    size = t['CodeSize']
-                else:
-                    reused_contracts += 1
-                    bytemap = data['map']
-                    instances = data['instances']+1
-                    size = data['size']
+            if tx_hash is None:
+                # this was a transaction without opcodes - a value transfer
+                empty_transactions += 1
+                continue
+            logger.debug(f"Tx {t['TxAddr']} has {len(t['Segments'])} segments")
+            codehash : str = t["CodeHash"]
+            data = dict_contracts.get(codehash)
+            if data is None:
+                bytemap = RoaringBitmap()
+                instances = 1
+                size = t['CodeSize']
+            else:
+                reused_contracts += 1
+                bytemap = data['map']
+                instances = data['instances']+1
+                size = data['size']
 
-                tx_segsizes: List[int] = []
-                for s in t["Segments"]:
-                    start = s["Start"]
-                    end = s["End"]
+            tx_segsizes: List[int] = []
+            for s in t["Segments"]:
+                start = s["Start"]
+                end = s["End"]
+                range_code = range(start, end+1)
+                bytemap.update(range_code)
+                if segment_stats:
                     length = end - start + 1
-                    range_code = range(start, end+1)
-                    bytemap.update(range_code)
-                    #bisect.insort_left(segment_sizes, length)
                     tx_segsizes.append(length)
-                dict_contracts[codehash] = contract_data(instances=instances, size=size, map=bytemap)
-                #del t["Segments"]
+            block_numsegments += len(t['Segments'])
+            dict_contracts[codehash] = contract_data(instances=instances, size=size, map=bytemap)
+            #del t["Segments"]
 
-                # transaction-level segment stats
-                if args.detail_level >= 3:
-                    print(f"Block {block} codehash={codehash} tx={t['TxAddr']} segs={len(tx_segsizes)} :"
-                          f"segment sizes:{sparkline_sizes(tx_segsizes)}")
+            # transaction-level segment stats
+            if segment_stats:
                 block_segsizes += sorted(tx_segsizes)
+            if detail_level >= 3:
+                segstats = f"segment sizes:{sparkline_sizes(tx_segsizes)}" if segment_stats else ""
+                print(f"Block {block} "
+                      f"codehash={codehash} "
+                      f"tx={t['TxAddr']} "
+                      f"segs={block_numsegments} "
+                      + segstats
+                      )
 
-        if len(block_segsizes) == 0:
+        # coherency check: did we classify all the transactions?
+        executed_transactions = sum([c["instances"] for c in dict_contracts.values()])
+        assert(len(traces) == executed_transactions + empty_transactions)
+
+        if executed_transactions == 0:
+            # There were no transactions with segments, so nothing to calculate for this block
             logger.debug(f"Block {block} had no segments")
             continue
 
-        block_segsizes = sorted(block_segsizes)
-        # block-level segment stats
-        if args.detail_level >=1:
-            stats=sparkline_sizes(block_segsizes)
-            print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
+        if segment_stats:
+            block_segsizes = sorted(block_segsizes)
+            file_segsizes += block_segsizes
+            # block-level segment stats
+            if detail_level >=1:
+                stats=sparkline_sizes(block_segsizes)
+                print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
 
-        block_executed_bytes = 0
-        block_hashes = 0
-        block_chunks = 0
-        block_contract_bytes = 0
+        block_executed_bytes : int = 0
+        block_hashes : List[int] = [0 for x in chunk_sizes] # one element per chunk size
+        block_chunks : List[int] = [0 for x in chunk_sizes] # one element per chunk size
 
         # chunkification of the contracts executed in the block
         for codehash, data in dict_contracts.items():
@@ -233,118 +282,170 @@ for f in files:
             codesize = data['size']
             bytemap = data['map']
             executed_bytes = len(bytemap)
-            max_possible_chunk = bytemap.max() // args.chunk_size
-            chunksb = RoaringBitmap()
-            if args.chunk_size == 1:
-                # special case for speed
-                chunkmap = bytemap
-            else:
-                for c in range(0, max_possible_chunk+1):
-                    chunk_start = c * args.chunk_size
-                    chunk_stop = (c+1) * args.chunk_size
-                    #chunkrange = range(chunk_start, chunk_stop)
-                    #z1 = len(bytemap.clamp(chunk_start, chunk_stop)) == 0 #fastest
-                    #z2 = bytemap.intersection_len(chunkrange) == 0
-                    #z3 = bytemap.isdisjoint(chunkrange)
-                    #assert(z1 == z2 and z2 == z3)
-                    #chunkificator = chunkificators[c]
-                    #if not bytemap.isdisjoint(chunkificator):
-                    overlap = bytemap.clamp(chunk_start, chunk_stop)
-                    if len(overlap) != 0:
-                        chunksb.add(c)
-                chunkmap = chunksb
-            chunks = len(chunkmap)
-            chunked_bytes =  chunks * args.chunk_size
-            chunked_executed_ratio = chunked_bytes // executed_bytes
-            merklization_hashes = merklize(chunkmap, args.arity, max_chunks)
-            highlighter : str = ""
-            if chunked_executed_ratio > 1:
-                highlighter = "\t\t" + "!"*(chunked_executed_ratio-1)
-                #represent_contract(bytemap, chunkmap)
-            if chunked_bytes < executed_bytes: # sanity check
-                logger.info(f"Contract {codehash} in block {block} executes {executed_bytes} but merklizes to {chunked_bytes}")
-                highlighter = "\t\t" + "??????"
-                represent_contract(bytemap, chunkmap)
-
-            chunk_waste = (1 - executed_bytes / chunked_bytes) * 100
-            if args.detail_level >=2:
-                print(f"Contract {codehash}: "
-                      f"{instances} txs "
-                      f"size {codesize}\t"
-                      f"executed {executed_bytes}\t"
-                      f"chunked {chunked_bytes}\t"
-                      f"wasted={chunk_waste:.0f}%\t"
-                      f"hashes={merklization_hashes}"
-                      +highlighter
-                )
-
             block_executed_bytes += executed_bytes
-            block_hashes += merklization_hashes
-            block_chunks += chunks
+            file_executed_bytes += executed_bytes
+            total_executed_bytes += executed_bytes
+            for csi in range(0, len(chunk_sizes)):
+                chunk_size = chunk_sizes[csi]
+                #maxcode_chunk = MAXCODESIZE // chunk_size
+                chunkmap = chunkmap_from_bytemap(bytemap, chunk_size)
+                merklization_hashes = merklize(chunkmap, arity, chunk_size)
 
-        block_chunk_waste = block_chunks * args.chunk_size - block_executed_bytes
-        block_chunk_wasted_ratio = block_chunk_waste / block_chunks * 100
-        block_chunk_bytes = block_chunks * args.chunk_size
-        block_hash_bytes = block_hashes * args.hash_size
-        block_merklization_bytes = block_chunk_bytes + block_hash_bytes
-        block_merklization_overhead_ratio = (block_merklization_bytes / block_executed_bytes - 1) * 100
+                num_chunks = len(chunkmap)
+                chunked_bytes = num_chunks * chunk_size
+
+                # make it easier to see outliers
+                highlighter : str = ""
+                chunked_to_executed_ratio = chunked_bytes / executed_bytes
+                if chunked_to_executed_ratio > 1:
+                    highlighter = "\t\t" + "!"*(int(chunked_to_executed_ratio) - 1)
+                    #represent_contract(bytemap, chunkmap)
+                if chunked_bytes < executed_bytes: # sanity check
+                    logger.error(f"Contract {codehash} in block {block} executes {executed_bytes} but merklizes to {chunked_bytes}")
+                    highlighter = "\t\t" + "??????"
+                    represent_contract(bytemap, chunkmap)
+
+                if detail_level >=2:
+                    chunk_waste = ((chunked_bytes - executed_bytes) / chunked_bytes) * 100
+                    print(f"Contract {codehash}: "
+                          f"{instances} txs "
+                          f"size={codesize}\t"
+                          f"executed={executed_bytes}\t"
+                          f"chunksize={chunk_size}\t"
+                          f"chunks={num_chunks}={chunked_bytes}B\t"
+                          f"wasted={chunk_waste:.0f}%\t"
+                          f"hashes={merklization_hashes}"
+                          +highlighter
+                    )
+
+                block_chunks[csi] += num_chunks
+                block_hashes[csi] += merklization_hashes
+                file_chunks[csi] += num_chunks
+                file_hashes[csi] += merklization_hashes
+                total_chunks[csi] += num_chunks
+                total_hashes[csi] += merklization_hashes
 
         # block-level merklization stats
-        if args.detail_level >=1:
-            #logger.info(f"Block {block}: txs={len(traces)}\treused_contracts={reused_contracts}\tcontracts={block_contract_bytes//1024}K\texecuted={block_executed_bytes//1024}K\tchunked={block_chunk_bytes//1024}K\twasted={block_chunk_wasted_ratio:.0f}%")
+        if detail_level >=1:
             print(f"Block {block}: "
-                  f"overhead={block_merklization_overhead_ratio:.1f}%\t"
-                  f"exec={block_executed_bytes/1024:.1f}K\t"
-                  f"merklization= {block_merklization_bytes/1024:.1f} K "
-                  f"= {block_chunk_bytes /1024:.1f} K ({block_chunks} chunks) + {block_hash_bytes /1024:.1f} K ({block_hashes} hashes)"
+                f"exec={block_executed_bytes / 1024:.1f}K\t"
+                , end=''
             )
+            if segment_stats:
+                # sorting helps other steps be faster (e.g., stats.median)
+                block_segsizes = sorted(block_segsizes)
+                print(f"segment sizes:{sparkline_sizes(block_segsizes)}")
+            else:
+                print()
 
-        file_chunks += block_chunks
-        file_executed_bytes += block_executed_bytes
-        file_hashes += block_hashes
-        file_segsizes += block_segsizes
-        #file_segsize_digest.batch_update(block_segsizes)
-        #file_segsize_digest.compress()
+            for csi in range(len(chunk_sizes)):  # we need the index
+                chunk_size = chunk_sizes[csi]
+                chunks = block_chunks[csi]
+                hashes = block_hashes[csi]
+                block_chunk_bytes = chunks * chunk_size
+                block_merklization_chunk_overhead = (block_chunk_bytes - block_executed_bytes) / block_executed_bytes * 100
+                print(
+                    f"\t"
+                    f"chunksize={chunk_size:2}\t"
+                    f"chunk_oh={block_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
+                    # ,end=''
+                )
+                for hash_size in hash_sizes:  # we need the index
+                    block_hash_bytes = hashes * hash_size
+                    block_merklization_hash_overhead = block_hash_bytes / block_executed_bytes * 100
+                    block_merklization_bytes = block_chunk_bytes + block_hash_bytes
+                    block_merklization_overhead = (block_merklization_bytes - block_executed_bytes) / block_executed_bytes * 100
+                    print(
+                        f"\t\t"
+                        f"hashsize={hash_size:2}"
+                        f"\t hash_oh={block_merklization_hash_overhead :5.1f}%"
+                        f"\t\ttotal_oh={block_merklization_overhead :5.1f}%"
+                        # f"mkztn={block_merklization_bytes / 1024:.1f} K "
+                        # f"= {block_chunk_bytes / 1024:.1f} K ({EngNumber(chunks)} chunks) + {block_hash_bytes / 1024:.1f} K ({EngNumber(hashes)} hashes)"
+                    )
+    del block_traces  # help the garbage collector?
 
-        #total_chunk_bytes += block_chunk_bytes
-        #total_executed_bytes += block_executed_bytes
-        #total_naive_bytes += block_contract_bytes
-        #total_hash_bytes += block_hash_bytes
-        #total_segsizes += block_segsizes
 
-
-    # sorting helps other steps be faster (e.g., stats.median)
-    file_segsizes = sorted(file_segsizes)
-    for s in file_segsizes:
-        total_segsize_digest.insert(s)
-    file_chunk_bytes = file_chunks * args.chunk_size
-    file_hash_bytes = file_hashes * args.hash_size
-    file_merklization_bytes = file_chunk_bytes + file_hash_bytes
-    file_merklization_overhead_ratio = (file_merklization_bytes / file_executed_bytes - 1) * 100
-    t_file = time.time() - t0
     # file-level merklization stats
     print(
         f"file {f}: "
-        f"overhead={file_merklization_overhead_ratio:.1f}%\t"
         f"exec={file_executed_bytes / 1024:.1f}K\t"
-        f"merklization= {file_merklization_bytes/1024:.1f} K "
-        f"= {file_chunk_bytes / 1024:.1f} K ({file_chunks} chunks) + {file_hash_bytes / 1024:.1f} K ({file_hashes} hashes)\t"
-        f"segment sizes:{sparkline_sizes(file_segsizes)}"
+        , end=''
     )
+    if segment_stats:
+        # sorting helps other steps be faster (e.g., stats.median)
+        file_segsizes = sorted(file_segsizes)
+        print(f"segment sizes:{sparkline_sizes(file_segsizes)}")
+    else:
+        print()
+
+    for csi in range(len(chunk_sizes)): # we need the index
+        chunk_size = chunk_sizes[csi]
+        chunks = file_chunks[csi]
+        hashes = file_hashes[csi]
+        file_chunk_bytes = chunks * chunk_size
+        file_merklization_chunk_overhead = (file_chunk_bytes - file_executed_bytes) / file_executed_bytes * 100
+        print(
+            f"\t"
+            f"chunksize={chunk_size:2}\t"
+            f"chunk_oh={file_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
+            #,end=''
+        )
+        for hash_size in hash_sizes:   # we need the index
+            file_hash_bytes = hashes * hash_size
+            file_merklization_hash_overhead = file_hash_bytes / file_executed_bytes * 100
+            file_merklization_bytes = file_chunk_bytes + file_hash_bytes
+            file_merklization_overhead = (file_merklization_bytes - file_executed_bytes) / file_executed_bytes * 100
+            print(
+                f"\t\t"
+                f"hashsize={hash_size:2}"
+                f"\t hash_oh={file_merklization_hash_overhead :5.1f}%"
+                f"\t\ttotal_oh={file_merklization_overhead :5.1f}%"
+                #f"mkztn={file_merklization_bytes / 1024:.1f} K "
+                #f"= {file_chunk_bytes / 1024:.1f} K ({EngNumber(chunks)} chunks) + {file_hash_bytes / 1024:.1f} K ({EngNumber(hashes)} hashes)"
+            )
+    # log speed 
+    t_file = time.time() - t0
     logger.info(f"file {f}: "
                  f"{blocks} blocks in {t_file:.0f} seconds = {blocks/t_file:.1f}bps.")
 
-    total_chunks += file_chunks
-    total_executed_bytes += file_executed_bytes
-    total_hashes += file_hashes
-    total_chunk_bytes = total_chunks * args.chunk_size
-    total_hash_bytes = total_hashes * args.hash_size
-    total_merklization_bytes = total_chunk_bytes + total_hash_bytes
-    total_merklization_overhead_ratio = (total_merklization_bytes / total_executed_bytes - 1) * 100
+    # global running stats
+    if len(files) < 2:
+        continue
     print(
         f"running total: "
-        f"blocks={total_blocks}\t"
-        f"overhead={total_merklization_overhead_ratio:.1f}%\t"
-        f"exec={total_executed_bytes / 1024:.1f}K\t"
-        f"merklization={total_merklization_bytes/1024:.1f}K = {total_chunk_bytes / 1024:.1f} K ({total_chunks} chunks) + {total_hash_bytes / 1024:.1f} K ({total_hashes} hashes)\t\t"
-        f"estimated median:{total_segsize_digest.quantile(0.5):.1f}")
+        f"{blocks} blocks"
+        ,end=''
+    )
+    if segment_stats:
+        for s in file_segsizes:
+            total_segsize_digest.insert(s)
+        print(f"\testimated median segsize:{total_segsize_digest.quantile(0.5):.1f}")
+    else:
+        print()
+
+    for csi in range(len(chunk_sizes)): # we need the index
+        chunk_size = chunk_sizes[csi]
+        chunks = total_chunks[csi]
+        hashes = total_hashes[csi]
+        total_chunk_bytes = chunks * chunk_size
+        total_merklization_chunk_overhead = (total_chunk_bytes - total_executed_bytes) / total_executed_bytes * 100
+        print(
+            f"\t"
+            f"chunksize={chunk_size:2}\t"
+            f"chunk_oh={total_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
+            #,end=''
+        )
+        for hash_size in hash_sizes:   # we need the index
+            total_hash_bytes = hashes * hash_size
+            total_merklization_hash_overhead = total_hash_bytes / total_executed_bytes * 100
+            total_merklization_bytes = total_chunk_bytes + total_hash_bytes
+            total_merklization_overhead = (total_merklization_bytes - total_executed_bytes) / total_executed_bytes * 100
+            print(
+                f"\t\t"
+                f"hashsize={hash_size:2}"
+                f"\t hash_oh={total_merklization_hash_overhead :5.1f}% ({EngNumber(hashes)} hashes)"
+                f"\t\ttotal_oh={total_merklization_overhead :5.1f}%\t"
+                #f"mkztn={total_merklization_bytes / 1024:.1f} K "
+                #f"= {total_chunk_bytes / 1024:.1f} K ({EngNumber(chunks)} chunks) + {total_hash_bytes / 1024:.1f} K ({EngNumber(hashes)} hashes)"
+            )

@@ -9,6 +9,7 @@ verify_ssl = true
 roaringbitmap = "*"
 sparklines = "*"
 tdigest-cffi = "*"
+engineering-notation = "*"
 
 [requires]
 python_version = "3"
