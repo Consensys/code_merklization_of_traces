@@ -11,9 +11,11 @@
 In this shell you can run `merklificator`.
 
 ## Run
-`merklificator` expects traces generated with the opcodeTracer that was merged into TurboGeth at commit [ed1819e](https://github.com/ledgerwatch/turbo-geth/commit/ed1819ec58c0e07e6276406f6c498d650cd3be15).
+`merklificator` expects traces generated with the opcodeTracer that was merged into TurboGeth at commit [ed1819e](https://github.com/ledgerwatch/turbo-geth/commit/ed1819ec58c0e07e6276406f6c498d650cd3be15). 
 
 Those traces are big (~300MB for a 1000 block file), so you will probably want to gzip them - that's how `merklificator` expects them.
+
+You can find some such trace files in the Releases section.
 
 Then, just run `python merklificator directory_with_traces`.
 
@@ -21,56 +23,81 @@ You can find some sample trace files in the releases section of this repo.
 
 ```
 $ python merklificator.py --help
-usage: merklificator.py [-h] [-s CHUNK_SIZE] [-m HASH_SIZE] [-a ARITY] [-v LOG] [-j JOB_ID] [-d DETAIL_LEVEL] traces_dir [traces_dir ...]
+usage: merklificator.py [-h] [-s [CHUNK_SIZE [CHUNK_SIZE ...]]] [-m [HASH_SIZE [HASH_SIZE ...]]] [-a ARITY] [-l LOG] [-j JOB_ID] [-d DETAIL_LEVEL] [-g] traces_dir [traces_dir ...]
 
-Reads a directory or a list of json files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes
+Reads a directory or multiple files containing segments from transactions, and applies fixed chunking to them to calculate the resulting witness sizes
 
 positional arguments:
-  traces_dir            Directory with trace files in .json.gz format
+  traces_dir            Directory with, or multiple space-separated trace files in .json.gz format
 
 optional arguments:
   -h, --help            show this help message and exit
-  -s CHUNK_SIZE, --chunk_size CHUNK_SIZE
-                        Chunk size in bytes (default: 32)
-  -m HASH_SIZE, --hash_size HASH_SIZE
-                        Hash size in bytes for construction of the Merkle tree (default: 32)
+  -s [CHUNK_SIZE [CHUNK_SIZE ...]], --chunk_size [CHUNK_SIZE [CHUNK_SIZE ...]]
+                        Chunk size in bytes. Can be multiple space-separated values. (default: [32])
+  -m [HASH_SIZE [HASH_SIZE ...]], --hash_size [HASH_SIZE [HASH_SIZE ...]]
+                        Hash size in bytes for construction of the Merkle tree. Can be multiple space-separated values. (default: [32])
   -a ARITY, --arity ARITY
                         Number of children per node of the Merkle tree (default: 2)
-  -v LOG, --log LOG     Log level (default: INFO)
+  -l LOG, --log LOG     Log level (default: INFO)
   -j JOB_ID, --job_ID JOB_ID
                         ID to distinguish in parallel runs (default: None)
   -d DETAIL_LEVEL, --detail_level DETAIL_LEVEL
                         3=transaction, 2=contract, 1=block, 0=file. One level implies the lower ones. (default: 1)
+  -g, --segment_stats   Whether to calculate and show segments stats (default: False)
+
+NOTE: hash_sizes have no effect on the tree calculations; they are just just for convenience to calculate overheads.
 ```
 
 ## Results
-This is an example of the output of `merklizator` for 32-byte chunks, 32-byte hashes and 2-arity (binary) tries:
+This is an example of the output of `merklificator` for 40/32/24 byte chunks, 32/24/16/8 byte hashes, 2-arity (binary) tries and with segment details:
 ```
-Block 9000095: segs=14270 median=18		2▁▁▂▄█▆█▅▃▆▄▃▄▃▃▂▂34 (+25% more)
-Block 9000095: overhead=110.2%	exec=141.1K	chunks=5743	hashes=3745	merklization= 296.5 K = 179.5 + 117.0 K
-Block 9000096: segs=13526 median=18		2▁▂▂▄█▇█▅▃▅▄▄▅▅▃▂▂34 (+21% more)
-Block 9000096: overhead=104.5%	exec=109.1K	chunks=4390	hashes=2749	merklization= 223.1 K = 137.2 + 85.9 K
-Block 9000097: segs=15607 median=15		2▁▁▂▄▆▆█▅▃▄▄▃▃▃28 (+26% more)
-Block 9000097: overhead=111.5%	exec=138.3K	chunks=5659	hashes=3703	merklization= 292.6 K = 176.8 + 115.7 K
-Block 9000098: segs=14042 median=16		2▁▁▂▅█▆█▄▃▅▃▃▃▃▃30 (+26% more)
-Block 9000098: overhead=107.8%	exec=164.9K	chunks=6764	hashes=4200	merklization= 342.6 K = 211.4 + 131.2 K
-Block 9000099: segs=9897  median=14		2▁▂▃▅▇▆█▄▂▃▅▃▃26 (+26% more)
-Block 9000099: overhead=116.5%	exec=135.4K	chunks=5609	hashes=3776	merklization= 293.3 K = 175.3 + 118.0 K
-Block 9000100: segs=9110  median=17		2▁▁▂▅█▆█▅▃▅▄▅▄▃▂▄32 (+20% more)
-Block 9000100: overhead=121.5%	exec=96.4K	chunks=3997	hashes=2836	merklization= 213.5 K = 124.9 + 88.6 K
-file /Users/mija/IGNORED BY TIMEMACHINE/traces-test/segs.json.gz: overhead=110.7%	exec=9092.2K	merklization= 19155.2 K = 11695.1 K chunks + 7460.1 K hashes	segment sizes:median=14		2▁▁▂▆█▇█▅▃▄▄▃▄26 (+25% more)
-16:16:25 file /Users/mija/IGNORED BY TIMEMACHINE/traces-test/segs.json.gz: 101 blocks in 11 seconds = 9.0bps.
-running total: blocks=101	overhead=110.7%	exec=9092.2K	merklization=19155.2K = 11695.1 K chunks + 7460.1 K hashes		estimated median:14.0
+...
+Block 9000100: exec=96.4K	segs=9110	seg_sizes:median=17		1▁▁▂▂▂▃▆▄█▆▄▇▆▄▄▄▂▄▄▂▄▃▄▅▂▃▂▃▁▄▂▁▁33 (+19% more)
+	chunksize=40	chunk_oh= 36.6% (3.37k chunks) + 2.59k hashes	
+		hashsize=32	 hash_oh= 84.0%		total_oh=120.6%
+		hashsize=24	 hash_oh= 63.0%		total_oh= 99.6%
+		hashsize=16	 hash_oh= 42.0%		total_oh= 78.6%
+		hashsize= 8	 hash_oh= 21.0%		total_oh= 57.6%
+	chunksize=32	chunk_oh= 29.6% (4k chunks) + 2.84k hashes	
+		hashsize=32	 hash_oh= 91.9%		total_oh=121.5%
+		hashsize=24	 hash_oh= 68.9%		total_oh= 98.5%
+		hashsize=16	 hash_oh= 46.0%		total_oh= 75.5%
+		hashsize= 8	 hash_oh= 23.0%		total_oh= 52.5%
+	chunksize=24	chunk_oh= 23.0% (5.06k chunks) + 3.13k hashes	
+		hashsize=32	 hash_oh=101.4%		total_oh=124.4%
+		hashsize=24	 hash_oh= 76.1%		total_oh= 99.0%
+		hashsize=16	 hash_oh= 50.7%		total_oh= 73.7%
+		hashsize= 8	 hash_oh= 25.4%		total_oh= 48.3%
+file segs.json.gz: exec=9092.2K	segs=1470396	seg_sizes:median=14		1▁▁▁▃▂▃▇▆█▇▅▇▇▅▅▃▃▄▄▄▃▃▃▄▃▃▂27 (+22% more)
+	chunksize=40	chunk_oh= 34.4% (312.77k chunks) + 218.92k hashes	
+		hashsize=32	 hash_oh= 75.2%		total_oh=109.6%
+		hashsize=24	 hash_oh= 56.4%		total_oh= 90.8%
+		hashsize=16	 hash_oh= 37.6%		total_oh= 72.0%
+		hashsize= 8	 hash_oh= 18.8%		total_oh= 53.2%
+	chunksize=32	chunk_oh= 28.6% (374.24k chunks) + 238.72k hashes	
+		hashsize=32	 hash_oh= 82.0%		total_oh=110.7%
+		hashsize=24	 hash_oh= 61.5%		total_oh= 90.2%
+		hashsize=16	 hash_oh= 41.0%		total_oh= 69.7%
+		hashsize= 8	 hash_oh= 20.5%		total_oh= 49.1%
+	chunksize=24	chunk_oh= 22.3% (474.58k chunks) + 264.52k hashes	
+		hashsize=32	 hash_oh= 90.9%		total_oh=113.3%
+		hashsize=24	 hash_oh= 68.2%		total_oh= 90.5%
+		hashsize=16	 hash_oh= 45.5%		total_oh= 67.8%
+		hashsize= 8	 hash_oh= 22.7%		total_oh= 45.1%
 ```
-This means that the execution of block 9000095 went through 13526 segments (AKA basic blocks), whose median length was 18 bytes, and with their length having the distribution shown to the right. The leftmost column of the sparkline shows length=2 and the rightmost column shows length=34. Apart from that, 25% of the samples had lengths over that range, and so didn't appear in the sparkline.
+This shows the stats for block 9000100 and for all the blocks in the input file. 
+Reporting is similar at the block, file and global level, so we'll focus on the file.
 
-In that block the executed bytecode was 141.1KB, and its merklization used 179.5KB in 5743 chunks + 117.0K in 3745 hashes, totaling 296.5KB. Therefore the merklization caused a 104.5% of overhead over just sending the executed bytecode.
+The file contains 101 blocks, which contain 1470396 segments, with a median length of 14 bytes, and the graphed distribution. The histogram shows the range of lengths 1 to 27, and 22% of lenghts are larger than that.  
+The distribution is only shown up to 2*median because it typically is very skewed towards shorter lengths.
 
-The sparkline only shows the range 2 to (2*median) because the distribution of lengths is typically very skewed towards shorter lengths, while having a sparse tail of longer lengths that makes it harder to see the detail.
+In the file, the executed bytecode comprised 9092.2KB, and its merklization caused an overhead dependent on the chunk size and the hash size. Importantly, chunk size drives the merklization and decides the number of hashes that are needed, so this is reflected in the report.  
 
-The statistics for blocks are accumulated to get exact stats for the whole trace file. See line starting with `file segs.json.gz`.  
+Additionally, for each given hash size, the resulting overhead owed to the hashes is calculated. `chunk_oh` is the chunk overhead, `hash_oh` is the hash overhead, and `total_oh` is the total overhead, with each figure relative to the number of executed bytes. So an overhead of 0% would mean that the only data transmitted was the executed bytes - which is only possible in the case of sending the whole contract bytecode, since that would moot the need for chunking and hashing.  
 
-Finally, the stats for all the files analyzed in the present run are accumulated into running stats, which are reported after each file.
+In the case of the present file, the minimum total overhead in the range of given parameters happens with chunksize=24 and hashsize=8. If we restricted the hashsize to 32, then the minimum would be at chunksize=40.
+
+All statistics are exact for the block and file levels. For multiple files, the segment median length is approximated to avoid unbounded memory growth, but the overhead calculations are still exact. 
 
 ## Caveats
 Exact stats are kept per input file, which determines the maximum memory used. If you find memory problems, break down your input files into smaller ones. A useful idiom to do this with `jq` is

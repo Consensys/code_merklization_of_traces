@@ -38,19 +38,19 @@ def clamp(n : int, min_n : int, max_n : int) -> int:
         return min_n
     return n
 
-def sparkline_sizes(sizes : List) -> str :
+def sparkline_sizes(sorted_sizes : List) -> str :
     # sizes is sorted so we can take advantage of that to accelerate things
-    median = statistics.median_low(sizes)
+    median = int(statistics.median(sorted_sizes))
     bucket_size = 1
     top_bucket = 2 * median # up to median there's half of the items. Since that's typically a short range anyway, let's show twice that.
     buckets_maxcontent = range(1, top_bucket, bucket_size)  # each bucket contains values up to this, inclusive
     if len(buckets_maxcontent)==0:
-        logger.info(f"Can't bucketize, moving on. sizes={sizes}, median={median}, block={block}")
-        return f"CAN'T BUCKETIZE! sizes={sizes}"
+        logger.info(f"Can't bucketize, moving on. sizes={sorted_sizes}, median={median}, block={block}")
+        return f"CAN'T BUCKETIZE! sizes={sorted_sizes}"
     buckets_contents = [0 for b in buckets_maxcontent]
     maxbucket = len(buckets_maxcontent)
     count = 0
-    for s in sizes:
+    for s in sorted_sizes:
         b = math.ceil(s / bucket_size)
         if b >= maxbucket:
             # since the sizes are sorted, at this point we know we're finished
@@ -60,18 +60,18 @@ def sparkline_sizes(sizes : List) -> str :
         buckets_contents[b] += 1
 
     sl = sparklines(buckets_contents)[0]
-    remaining = (1 - count/len(sizes)) * 100
+    remaining = (1 - count / len(sorted_sizes)) * 100
     line = f"median={median}\t\t{buckets_maxcontent[0]}{sl}{buckets_maxcontent[-1]} (+{remaining:.0f}% more)"
     return line
 
 
 parser = argparse.ArgumentParser(
-    description='Reads a directory or files containing segments from transactions, and applies a chunking strategy to them to calculate the resulting witness sizes',
+    description='Reads a directory or multiple files containing segments from transactions, and applies fixed chunking to them to calculate the resulting witness sizes',
     epilog='Note that hash_sizes have no effect on the tree calculations; they are just used to get the bytes consumed by hashes.',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("traces_dir", help="Directory with, or trace files in .json.gz format", nargs='+')
+parser.add_argument("traces_dir", help="Directory with, or multiple space-separated trace files in .json.gz format", nargs='+')
 parser.add_argument("-s", "--chunk_size", help="Chunk size in bytes. Can be multiple space-separated values.", type=int, default=[32], nargs='*')
-parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree. Can be multiple space-separated values.", type=int, default=[32], nargs='*')
+parser.add_argument("-m", "--hash_size", help="Hash size in bytes for construction of the Merkle tree. Can be multiple space-separated values.\n", type=int, default=[32], nargs='*')
 parser.add_argument("-a", "--arity", help="Number of children per node of the Merkle tree", type=int, default=2)
 parser.add_argument("-l", "--log", help="Log level", type=str, default="INFO")
 parser.add_argument("-j", "--job_ID", help="ID to distinguish in parallel runs", type=int, default=None)
@@ -245,13 +245,14 @@ for f in files:
 
             # transaction-level segment stats
             if segment_stats:
-                block_segsizes += sorted(tx_segsizes)
+                tx_segsizes = sorted(tx_segsizes)
+                block_segsizes += tx_segsizes
             if detail_level >= 3:
-                segstats = f"segment sizes:{sparkline_sizes(tx_segsizes)}" if segment_stats else ""
+                segstats = f"seg_sizes:{sparkline_sizes(tx_segsizes)}" if segment_stats else ""
                 print(f"Block {block} "
                       f"codehash={codehash} "
                       f"tx={t['TxAddr']} "
-                      f"segs={block_numsegments} "
+                      f"segs={len(tx_segsizes)} "
                       + segstats
                       )
 
@@ -263,14 +264,6 @@ for f in files:
             # There were no transactions with segments, so nothing to calculate for this block
             logger.debug(f"Block {block} had no segments")
             continue
-
-        if segment_stats:
-            block_segsizes = sorted(block_segsizes)
-            file_segsizes += block_segsizes
-            # block-level segment stats
-            if detail_level >=1:
-                stats=sparkline_sizes(block_segsizes)
-                print(f"Block {block}: segs={len(block_segsizes):<6d}"+stats)
 
         block_executed_bytes : int = 0
         block_hashes : List[int] = [0 for x in chunk_sizes] # one element per chunk size
@@ -296,10 +289,6 @@ for f in files:
 
                 # make it easier to see outliers
                 highlighter : str = ""
-                chunked_to_executed_ratio = chunked_bytes / executed_bytes
-                if chunked_to_executed_ratio > 1:
-                    highlighter = "\t\t" + "!"*(int(chunked_to_executed_ratio) - 1)
-                    #represent_contract(bytemap, chunkmap)
                 if chunked_bytes < executed_bytes: # sanity check
                     logger.error(f"Contract {codehash} in block {block} executes {executed_bytes} but merklizes to {chunked_bytes}")
                     highlighter = "\t\t" + "??????"
@@ -334,7 +323,10 @@ for f in files:
             if segment_stats:
                 # sorting helps other steps be faster (e.g., stats.median)
                 block_segsizes = sorted(block_segsizes)
-                print(f"segment sizes:{sparkline_sizes(block_segsizes)}")
+                print(
+                    f"segs={len(block_segsizes)}\t"
+                    f"seg_sizes:{sparkline_sizes(block_segsizes)}")
+                file_segsizes += block_segsizes
             else:
                 print()
 
@@ -350,7 +342,7 @@ for f in files:
                     f"chunk_oh={block_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
                     # ,end=''
                 )
-                for hash_size in hash_sizes:  # we need the index
+                for hash_size in hash_sizes:
                     block_hash_bytes = hashes * hash_size
                     block_merklization_hash_overhead = block_hash_bytes / block_executed_bytes * 100
                     block_merklization_bytes = block_chunk_bytes + block_hash_bytes
@@ -369,13 +361,16 @@ for f in files:
     # file-level merklization stats
     print(
         f"file {f}: "
+        f"blocks={blocks}\t"
         f"exec={file_executed_bytes / 1024:.1f}K\t"
         , end=''
     )
     if segment_stats:
         # sorting helps other steps be faster (e.g., stats.median)
         file_segsizes = sorted(file_segsizes)
-        print(f"segment sizes:{sparkline_sizes(file_segsizes)}")
+        print(
+            f"segs={len(file_segsizes)}\t"
+            f"seg_sizes:{sparkline_sizes(file_segsizes)}")
     else:
         print()
 
@@ -391,7 +386,7 @@ for f in files:
             f"chunk_oh={file_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
             #,end=''
         )
-        for hash_size in hash_sizes:   # we need the index
+        for hash_size in hash_sizes:
             file_hash_bytes = hashes * hash_size
             file_merklization_hash_overhead = file_hash_bytes / file_executed_bytes * 100
             file_merklization_bytes = file_chunk_bytes + file_hash_bytes
@@ -414,7 +409,7 @@ for f in files:
         continue
     print(
         f"running total: "
-        f"{blocks} blocks"
+        f"blocks={total_blocks}\t"
         ,end=''
     )
     if segment_stats:
@@ -436,7 +431,7 @@ for f in files:
             f"chunk_oh={total_merklization_chunk_overhead :5.1f}% ({EngNumber(chunks)} chunks) + {EngNumber(hashes)} hashes\t"
             #,end=''
         )
-        for hash_size in hash_sizes:   # we need the index
+        for hash_size in hash_sizes:
             total_hash_bytes = hashes * hash_size
             total_merklization_hash_overhead = total_hash_bytes / total_executed_bytes * 100
             total_merklization_bytes = total_chunk_bytes + total_hash_bytes
