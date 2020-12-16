@@ -112,12 +112,17 @@ zcat segments-9000000.json.gz | jq 'with_entries(select(.key | tonumber <= 90001
 
 ## As a module
 
-You can import merklificator as a module and run the function `merklize` to experiment and get a feeling on how the various parameters give shape to the Merkle tree. Particularly, if you feed it a filename parameter, it will generate a GraphViz dotfile to visualize the tree, in which nodes are colored depending on their role:
-* green: a leaf of the tree, which gets included in the witness
-* red: a hash that has to get included in the witness to enable the receiver to calculate the proof
-* grey: a hash that the receiver can calculate by themself
-* white: a part of the tree that is not needed by the proof
+You can import merklificator as a module and run the function `merklize` to experiment and get a feeling on how the various parameters give shape to the Merkle tree. Particularly, if you feed it a filename parameter, it will generate a [GraphViz dotfile](https://www.graphviz.org/doc/info/lang.html) to visualize the tree, in which nodes are colored depending on their role:
+* Green: a chunk, which is leaf of the tree. It gets included in the witness.
+* Red: a hash that needs to be included in the witness to enable the receiver to check the proof.
+* Grey: a hash that the receiver can calculate by themself.
+* White: a part of the tree that is not needed by the proof.
 
 For example: this the visualization generated for chunkmap=RoaringBitmap([0,1,2]), arity=2, max_theoretical_chunks=30. 
-It shows that 3 leaves are provided, and 4 hashes need to be included, 
+It shows that 3 leaves were provided, and 4 hashes need to be included.
+ 
+
 ![Tree graph](graph.png)
+
+
+You'll need [GraphViz](https://www.graphviz.org/) to turn the dotfile into an actual image. There's a useful [VSCode plugin](https://marketplace.visualstudio.com/items?itemName=tintinweb.graphviz-interactive-preview) as well. 
