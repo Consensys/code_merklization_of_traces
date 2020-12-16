@@ -3,10 +3,10 @@
   
 `merklificator` is a tool to calculate code merklization outcomes from real world traces, using fixed-size chunking with configurable chunk size, hash size and tree arity.  
   
-  ## Install
-  Install [pipenv](https://pipenv.pypa.io/en/latest/) in your system, which will allow you to install dependencies for this project with minimum fuss.
+## Install
+Install [pipenv](https://pipenv.pypa.io/en/latest/) in your system, which will allow you to install dependencies for this project with minimum fuss.
  
- Then, cd to this project's directory and run `pipenv shell`. This will open a shell with all the prerequisites installed.
+Then, cd to this project's directory and run `pipenv shell`. This will open a shell with all the prerequisites installed.
  
 In this shell you can run `merklificator`.
 
@@ -19,7 +19,7 @@ You can find some such trace files in the Releases section.
 
 Then, just run `python merklificator directory_with_traces`.
 
-You can find some sample trace files in the releases section of this repo.
+You can find sample trace files for Mainnet blocks 9000000 - 9250000 in the releases section of this repo.
 
 ```
 $ python merklificator.py --help
@@ -100,11 +100,24 @@ In the case of the present file, the minimum total overhead in the range of give
 All statistics are exact for the block and file levels. For multiple files, the segment median length is approximated to avoid unbounded memory growth, but the overhead calculations are still exact. 
 
 ## Caveats
-Exact stats are kept per input file, which determines the maximum memory used. If you find memory problems, break down your input files into smaller ones. A useful idiom to do this with `jq` is
+* Exact stats are kept per input file, which determines the maximum memory used. If you find memory problems, break down your input files into smaller ones. A useful idiom to do this with `jq` is
 ```
 zcat segments-9000000.json.gz | jq 'with_entries(select(.key | tonumber <= 9000100))' | gzip > segs100.json.gz
 ```
 
-When feeding multiple files into `merklizator`, overall stats are carried over as an approximation, using the [t-digest](https://github.com/kpdemetriou/tdigest-cffi) algorithm. This allows to keep running stats for an arbitrary number of blocks and files without ever-growing memory consumption.
+* When feeding multiple files into `merklizator`, overall stats are carried over as an approximation, using the [t-digest](https://github.com/kpdemetriou/tdigest-cffi) algorithm. This allows to keep running stats for an arbitrary number of blocks and files without ever-growing memory consumption.
 
-If you plan to customize the data gathered and exported by TurboGeth's opcodeTracer, it might be worth it to create and export RoaringBitmaps from TurboGeth instead of the JSON representation of segments / basic blocks. This would avoid the JSON bottleneck in both sides of the pipeline.
+* If you plan to customize the data gathered and exported by TurboGeth's opcodeTracer, it might be worth it to create and export RoaringBitmaps from TurboGeth instead of the JSON representation of segments / basic blocks. This would avoid the JSON bottleneck in both sides of the pipeline.
+
+
+## As a module
+
+You can import merklificator as a module and run the function `merklize` to experiment and get a feeling on how the various parameters give shape to the Merkle tree. Particularly, if you feed it a filename parameter, it will generate a GraphViz dotfile to visualize the tree, in which nodes are colored depending on their role:
+* green: a leaf of the tree, which gets included in the witness
+* red: a hash that has to get included in the witness to enable the receiver to calculate the proof
+* grey: a hash that the receiver can calculate by themself
+* white: a part of the tree that is not needed by the proof
+
+For example: this the visualization generated for chunkmap=RoaringBitmap([0,1,2]), arity=2, max_theoretical_chunks=30. 
+It shows that 3 leaves are provided, and 4 hashes need to be included, 
+![Tree graph](graph.png)
